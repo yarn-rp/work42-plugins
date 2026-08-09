@@ -40,7 +40,7 @@ optional and discovered by convention — no per-item lists in the manifest):
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | yes | Slug (alphanumeric + hyphens). Must be unique across installed plugins. |
-| `version` | yes | SemVer string (e.g. `1.0.0`). |
+| `version` | yes | Integer (e.g. `1`). Parsed as `Int` by the Work42 CLI — do not use semver strings. |
 | `description` | yes | Human-readable description of the plugin. |
 | `author` | yes | Author name or organization. |
 | `sdk_version` | yes | Widget SDK ABI version. Must match the installed Work42 ABI. |
@@ -48,7 +48,7 @@ optional and discovered by convention — no per-item lists in the manifest):
 Example `plugin.yaml`:
 ```yaml
 name: github
-version: 1.0.0
+version: 1
 description: GitHub PR browser and open-PRs list widgets for Work42.
 author: work42
 sdk_version: 4

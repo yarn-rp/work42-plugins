@@ -1,5 +1,5 @@
 name: jira
-version: 1.0.0
+version: 1
 description: >
   Jira integration for Work42. Provides the Jira issue browser widget
   (renders the issue linked to the current session) and the jira-my-issues

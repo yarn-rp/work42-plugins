@@ -1,5 +1,5 @@
 name: github
-version: 1.0.0
+version: 1
 description: >
   GitHub integration for Work42. Provides the GitHub PR browser widget
   (one tab per attached PR, background watch loop, PR activity events) and the
