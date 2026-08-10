@@ -99,6 +99,9 @@ final class JiraWidget: Work42Widget {
 
     /// The Jira issue URL loaded from storage. nil = empty state (paste-URL form).
     var jiraURL: URL? = nil
+    /// The parsed issue key (jira/key storage, e.g. "PROJ-123"). Feeds the
+    /// session-header label (`Work42WidgetHeaderLabels`).
+    var jiraKey: String? = nil
     /// Non-nil while storage is being read on first activate.
     var isLoading: Bool = false
 
@@ -118,6 +121,7 @@ final class JiraWidget: Work42Widget {
     func deactivate() {
         services = nil
         jiraURL = nil
+        jiraKey = nil
         isLoading = false
         BrowserSurfaceCache.shared.teardown(key: id)
     }
@@ -140,12 +144,20 @@ final class JiraWidget: Work42Widget {
                !urlStr.isEmpty,
                let url = URL(string: urlStr) {
                 jiraURL = url
+                if let keyValue = try? await services.storage.get(namespace: "jira", key: "key"),
+                   case .string(let keyStr) = keyValue, !keyStr.isEmpty {
+                    jiraKey = keyStr
+                } else {
+                    jiraKey = parseJiraKey(from: urlStr)
+                }
             } else {
                 jiraURL = nil
+                jiraKey = nil
             }
         } catch {
             // Storage unavailable (Home surface, no task) — stay in empty state.
             jiraURL = nil
+            jiraKey = nil
         }
     }
 
@@ -173,6 +185,7 @@ final class JiraWidget: Work42Widget {
         }
 
         jiraURL = url
+        jiraKey = key
         return nil
     }
 
@@ -188,7 +201,24 @@ final class JiraWidget: Work42Widget {
             // Fail silently on clear — the UI will still reset to empty state.
         }
         jiraURL = nil
+        jiraKey = nil
         BrowserSurfaceCache.shared.teardown(key: id)
+    }
+}
+
+// MARK: - Session header labels (Work42WidgetHeaderLabels)
+
+/// Contributes the linked issue's key (e.g. "PROJ-123") to the session
+/// header's metadata strip, accent-tinted and clickable through to the
+/// issue. Vendor knowledge stays in the widget — the host renders the chip
+/// without knowing what a Jira key is.
+extension JiraWidget: Work42WidgetHeaderLabels {
+    var headerLabels: [WidgetHeaderLabel] {
+        guard let key = jiraKey, !key.isEmpty else { return [] }
+        return [WidgetHeaderLabel(
+            text: key, systemIcon: "ticket",
+            tint: .accent, url: jiraURL
+        )]
     }
 }
 

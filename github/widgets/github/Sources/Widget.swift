@@ -94,6 +94,7 @@ struct PRSnapshot: Sendable {
     var state: String       // OPEN / MERGED / CLOSED
     var headRefOid: String
     var mergedAt: String?
+    var author: String      // PR author's login ("" when absent)
     var reviews: [Review]
     var comments: [Comment]
     var reviewComments: [InlineComment]
@@ -124,6 +125,37 @@ struct PRSnapshot: Sendable {
     }
 }
 
+/// Aggregate of one PR's header-worthy state — feeds the session-header
+/// labels (`Work42WidgetHeaderLabels`). Derived from a `PRSnapshot` each
+/// watch cycle; stored on the widget's `@Observable` state so the host
+/// strip re-renders when CI or reviews move.
+struct PRHeaderState: Sendable, Equatable {
+    var author: String
+    var checksTotal: Int
+    var checksFailed: Int
+    var checksPending: Int
+    var approvals: Int
+    var changesRequested: Bool
+
+    init(from snap: PRSnapshot) {
+        author = snap.author
+        checksTotal = snap.checks.count
+        checksFailed = snap.checks.filter(\.isFailure).count
+        checksPending = snap.checks.filter { !$0.isComplete }.count
+        // Latest review per author decides their standing (GitHub semantics:
+        // a newer APPROVED supersedes an older CHANGES_REQUESTED and vice
+        // versa; COMMENTED never changes standing).
+        var latest: [String: PRSnapshot.Review] = [:]
+        for r in snap.reviews where r.state == "APPROVED" || r.state == "CHANGES_REQUESTED" {
+            if let existing = latest[r.author],
+               (existing.submittedAt ?? "") > (r.submittedAt ?? "") { continue }
+            latest[r.author] = r
+        }
+        approvals = latest.values.filter { $0.state == "APPROVED" }.count
+        changesRequested = latest.values.contains { $0.state == "CHANGES_REQUESTED" }
+    }
+}
+
 // MARK: - JSON parsing from gh output
 
 /// Parse `gh pr view --json number,state,headRefOid,mergedAt,reviews,comments,statusCheckRollup`
@@ -137,6 +169,7 @@ func parsePRSnapshot(from jsonString: String, prURL: String) -> PRSnapshot? {
     let state = ((obj["state"] as? String) ?? "UNKNOWN").uppercased()
     let headRefOid = (obj["headRefOid"] as? String) ?? ""
     let mergedAt = obj["mergedAt"] as? String
+    let author = decodeLogin(obj, key: "author")
 
     // Reviews
     var reviews: [PRSnapshot.Review] = []
@@ -197,6 +230,7 @@ func parsePRSnapshot(from jsonString: String, prURL: String) -> PRSnapshot? {
 
     return PRSnapshot(
         number: number, state: state, headRefOid: headRefOid, mergedAt: mergedAt,
+        author: author,
         reviews: reviews, comments: comments, reviewComments: [], checks: checks
     )
 }
@@ -402,6 +436,10 @@ final class GitHubPRWidget: Work42Widget {
 
     /// Current PR list from `github/prs`. Updated by the watcher and attach/detach.
     var prs: [PREntry] = []
+    /// Latest per-PR header aggregate (CI + review standing), keyed by PR
+    /// url. Written each watch cycle; read by `headerLabels` so the session
+    /// header strip re-renders live as CI/reviews move.
+    var headerStates: [String: PRHeaderState] = [:]
     /// Non-nil when gh is unavailable / unauthenticated — shown in empty+degraded state.
     var ghDegradedMessage: String? = nil
     /// Drives the attach-sheet presentation.
@@ -602,7 +640,7 @@ final class GitHubPRWidget: Work42Widget {
             let key = entry.url
 
             // Fetch snapshot via gh
-            let ghJSON = "\(enrichedPathPrefix) && gh pr view \"\(entry.url)\" --json number,state,headRefOid,mergedAt,reviews,comments,statusCheckRollup"
+            let ghJSON = "\(enrichedPathPrefix) && gh pr view \"\(entry.url)\" --json number,state,headRefOid,mergedAt,author,reviews,comments,statusCheckRollup"
             let prResult: WidgetShellResult
             do {
                 prResult = try await services.shell.run(command: ghJSON)
@@ -630,9 +668,16 @@ final class GitHubPRWidget: Work42Widget {
                 let inline = parseInlineComments(from: inlineResult.stdout)
                 snap = PRSnapshot(
                     number: snap.number, state: snap.state, headRefOid: snap.headRefOid,
-                    mergedAt: snap.mergedAt, reviews: snap.reviews, comments: snap.comments,
+                    mergedAt: snap.mergedAt, author: snap.author,
+                    reviews: snap.reviews, comments: snap.comments,
                     reviewComments: inline, checks: snap.checks
                 )
+            }
+
+            // Feed the session-header labels from this cycle's snapshot.
+            let newHeaderState = PRHeaderState(from: snap)
+            if headerStates[key] != newHeaderState {
+                headerStates[key] = newHeaderState
             }
 
             let prior = lastSeen[key]
@@ -1115,6 +1160,57 @@ private struct PRAttachSheet: View {
                 widget.showingAttachForm = false
             }
         }
+    }
+}
+
+// MARK: - Session header labels (Work42WidgetHeaderLabels)
+
+/// Labels the widget contributes to the session header's metadata strip:
+/// CI standing + review standing for the primary (first) attached PR.
+/// Vendor knowledge stays here — the host renders the chips without knowing
+/// what "CI" or "approvals" mean. The PR author chip stays host-provided on
+/// patrol sessions (PROwnerChip), so it is intentionally NOT duplicated.
+extension GitHubPRWidget: Work42WidgetHeaderLabels {
+    var headerLabels: [WidgetHeaderLabel] {
+        // Label the FIRST PR only — patrol sessions have one primary PR;
+        // labeling a whole multi-PR set would spam the strip.
+        guard let entry = prs.first, let st = headerStates[entry.url] else { return [] }
+        var labels: [WidgetHeaderLabel] = []
+
+        if st.checksTotal > 0 {
+            let checksURL = URL(string: "\(entry.url)/checks")
+            if st.checksFailed > 0 {
+                labels.append(WidgetHeaderLabel(
+                    text: st.checksFailed == 1 ? "CI: 1 failing" : "CI: \(st.checksFailed) failing",
+                    systemIcon: "xmark.circle.fill", tint: .failure, url: checksURL
+                ))
+            } else if st.checksPending > 0 {
+                labels.append(WidgetHeaderLabel(
+                    text: "CI running", systemIcon: "clock.fill",
+                    tint: .warning, url: checksURL
+                ))
+            } else {
+                labels.append(WidgetHeaderLabel(
+                    text: "CI passing", systemIcon: "checkmark.circle.fill",
+                    tint: .success, url: checksURL
+                ))
+            }
+        }
+
+        if st.changesRequested {
+            labels.append(WidgetHeaderLabel(
+                text: "Changes requested", systemIcon: "exclamationmark.bubble.fill",
+                tint: .warning, url: URL(string: entry.url)
+            ))
+        } else if st.approvals > 0 {
+            labels.append(WidgetHeaderLabel(
+                text: st.approvals == 1 ? "1 approval" : "\(st.approvals) approvals",
+                systemIcon: "checkmark.seal.fill", tint: .success,
+                url: URL(string: entry.url)
+            ))
+        }
+
+        return labels
     }
 }
 
