@@ -1,0 +1,10 @@
+name: jira
+version: 1
+description: >
+  Jira integration for Work42. Provides the Jira issue browser widget
+  (renders the issue linked to the current session) and the jira-my-issues
+  list widget (all your assigned issues with one-click work session launch).
+  Includes a Jira Work tab template and a plugin skill that explains how the
+  two widgets work together.
+author: work42
+sdk_version: 4

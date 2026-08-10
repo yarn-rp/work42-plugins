@@ -1,0 +1,10 @@
+name: github
+version: 1
+description: >
+  GitHub integration for Work42. Provides the GitHub PR browser widget
+  (one tab per attached PR, background watch loop, PR activity events) and the
+  github-prs list widget (all your open PRs with one-click code-review session
+  launch). Includes a GitHub Review tab template and a plugin skill that
+  explains how the two widgets work together.
+author: work42
+sdk_version: 4

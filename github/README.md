@@ -1,39 +1,69 @@
-# github — pre-built GitHub PR widget
+# github — Work42 GitHub plugin
 
-Renders one browser tab per PR attached to the current session (task or
-patrol), backed by the `github` storage namespace, and runs a background
-watch loop that surfaces new PR activity as session events.
+Provides two GitHub widgets for Work42 sessions: the `github` PR browser (one
+tab per attached PR, background watch loop) and the `github-prs` open-PRs list
+(all your open PRs with one-click code-review session launch).
 
-## Layout
+## Bundle layout
 
 ```
 github/
-  Sources/
-    Widget.swift    — Work42Widget implementation + @_cdecl entry points
-  SKILL.md          — agent-facing skill: the storage convention + CLI usage
+  plugin.yaml                   plugin metadata (name, version, sdk_version)
+  widgets/
+    github/                     the github PR browser widget
+      Sources/Widget.swift      Work42Widget implementation + @_cdecl entry points
+      SKILL.md                  agent-facing skill: storage convention + CLI usage
+    github-prs/                 the github-prs list widget (subtask .10)
+      README.md                 scaffold stub — Widget.swift added by subtask .10
+  skills/
+    using-github/
+      SKILL.md                  plugin-level skill: how both widgets work together
+  tab-templates/
+    github-review.json          UserTabTemplate: "GitHub Review" (UUID 1a2b3c4d-…)
 ```
 
-`widget.yaml` and the built `.dylib` are generated at install time — never
+`widget.yaml` and built `.dylib` files are generated at install time — never
 hand-edit or commit them.
 
-## What it does
+## What the widgets do
+
+### widget:github
 
 - Reads/writes `github/prs` (JSON array of `{url, status, merged_at}`) via
-  `services.storage` — the same convention `task42 storage` and
-  `patrol42 storage` expose to agents.
-- One `BrowserSurface` tab per PR, chrome-as-header, persistent `"github"`
-  login cookie jar shared with the built-in Browser widget.
-- Lets the user select text on a PR page and attach it to the chat composer
-  as a cited comment, resolving the exact file + line range from the PR's
-  diff when possible.
-- Polls `gh` in the background (via `services.shell`) for reviews, comments,
-  CI checks, and merge/close/reopen, delivering each new occurrence as a
-  fingerprinted session event (`task42 event` / `patrol42 event`) so nothing
-  repeats on every poll.
+  `services.storage`.
+- One `BrowserSurface` tab per attached PR; supports attach/detach in-widget.
+- Background poll loop (60 s) delivers PR activity as fingerprinted
+  `[system event]`s via `task42 event` / `patrol42 event`.
+- Text-selection bubble for attaching quoted PR content to the chat composer,
+  with diff-anchor resolution via `gh pr diff`.
 
-See `SKILL.md` for the exact storage keys and CLI commands an agent uses to
-drive this widget without it being open.
+### widget:github-prs
 
-## Building
+- Lists all open PRs authored by the current user via `gh pr list --author @me`.
+- One row per PR with a "Start code review session" button.
+- The button fires `services.intents.execute(id: "global.review.pr", params:
+  ["url": prURL])`, opening a code-review patrol session for that PR in one
+  click.
+- Degrades to a named error state when `gh` is unavailable; never a blank tile.
 
-See the repo root [README](../README.md) for the build/install workflow.
+## Installing
+
+```bash
+work42 plugin install /path/to/work42-plugins/github
+```
+
+Or install from the git URL:
+
+```bash
+work42 plugin install https://github.com/yarn-rp/work42-plugins/github
+```
+
+The `github` plugin is also bundled inside the Work42 app and auto-installed
+on first launch — manual install is only needed for modified copies or
+development builds.
+
+## See also
+
+- `skills/using-github/SKILL.md` — full plugin skill (storage, events, intents)
+- `widgets/github/SKILL.md` — widget-level skill (storage keys, CLI commands)
+- Work42 repo `docs/plugins.md` — plugin format reference and authoring guide
