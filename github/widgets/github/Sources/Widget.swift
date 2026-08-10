@@ -1171,16 +1171,23 @@ private struct PRAttachSheet: View {
 // MARK: - Session header labels (Work42WidgetHeaderLabels)
 
 /// Labels the widget contributes to the session header's metadata strip:
-/// CI standing + review standing for the primary (first) attached PR.
-/// Vendor knowledge stays here — the host renders the chips without knowing
-/// what "CI" or "approvals" mean. The PR author chip stays host-provided on
-/// patrol sessions (PROwnerChip), so it is intentionally NOT duplicated.
+/// author + CI standing + review standing for the primary (first) attached
+/// PR. Vendor knowledge stays here — the host renders the chips without
+/// knowing what "CI" or "approvals" mean. (The host's old PROwnerChip and
+/// its inline gh author fetch were REMOVED in favor of this label.)
 extension GitHubPRWidget: Work42WidgetHeaderLabels {
     var headerLabels: [WidgetHeaderLabel] {
         // Label the FIRST PR only — patrol sessions have one primary PR;
         // labeling a whole multi-PR set would spam the strip.
         guard let entry = prs.first, let st = headerStates[entry.url] else { return [] }
         var labels: [WidgetHeaderLabel] = []
+
+        if !st.author.isEmpty {
+            labels.append(WidgetHeaderLabel(
+                text: "@\(st.author)", systemIcon: "person.crop.circle",
+                tint: .neutral, url: URL(string: "https://github.com/\(st.author)")
+            ))
+        }
 
         if st.checksTotal > 0 {
             let checksURL = URL(string: "\(entry.url)/checks")
