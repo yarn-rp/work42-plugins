@@ -29,7 +29,7 @@
 //   isEnabled:       true only when model.urlDraft contains "/browse/" (i.e.
 //                    the browser is on a Jira issue page, e.g. /browse/PROJ-123)
 //   perform:         services.intents.execute(
-//                      id: "global.new.task",
+//                      id: "global.new.task.jira",
 //                      params: ["url": .string(currentURL)]
 //                    )
 //
@@ -119,7 +119,7 @@ final class JiraBoardWidget: Work42Widget {
                     guard !currentURL.isEmpty else { return }
                     guard let services = self.services else { return }
                     try await services.intents.execute(
-                        id: "global.new.task",
+                        id: "global.new.task.jira",
                         params: ["url": .string(currentURL)]
                     )
                 }

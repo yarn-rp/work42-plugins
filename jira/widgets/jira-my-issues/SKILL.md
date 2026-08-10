@@ -91,14 +91,14 @@ board browser is open. The button is:
 When clicked (or executed from the palette), the button fires:
 ```
 services.intents.execute(
-  id: "global.new.task",
+  id: "global.new.task.jira",
   params: ["url": .string(currentURL)]
 )
 ```
 
 This creates (or re-focuses) a task session seeded with the issue URL. The
-`global.new.task` intent reads the `url` parameter and opens the task with the
-Jira widget pre-loaded to that issue.
+`global.new.task.jira` intent reads the `url` parameter, seeds `jira/url` into
+the new session, and opens the task with the Jira widget pre-loaded to that issue.
 
 ## Browser login
 
