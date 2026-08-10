@@ -1,134 +1,108 @@
 ---
 name: widget-jira-my-issues
 description: |
-  How to use and configure the jira-my-issues widget (session tab kindId
-  widget:jira-my-issues). This widget lists the current user's assigned Jira
-  issues (fetched via the Jira REST API using a stored API token) and provides
-  one-click "Start work session" buttons per issue row. Configure it by setting
-  three storage keys in the widget's own namespace: jira-my-issues/base,
-  jira-my-issues/email, and jira-my-issues/token. Use
-  `task42 storage set <task-id> jira-my-issues/<key> "<json-value>"` to set
-  credentials from the CLI without the widget UI open.
+  How to use and configure the jira-my-issues widget (widget kindId
+  widget:jira-my-issues). This widget pins the user's Jira board URL in a
+  full-page BrowserSurface on the Home surface. No API token or email is
+  required — authentication is through the shared browser session (dataStoreKey
+  "browser"). The board URL is entered once via an empty-state form and persisted
+  to project-level Home storage (key jira-my-issues/board). A "Start Task
+  Session" button appears in the action area ONLY when the browser is viewing a
+  Jira issue page (URL path contains /browse/).
 ---
 
 # jira-my-issues widget
 
-Lists all Jira issues assigned to the current user whose status category is not
-Done. One row per issue; each row shows the issue key, summary, and status, plus
-a "Start work session" button that fires the `global.new.task.jira` palette
-intent with the issue URL — opening (or re-focusing) a task session seeded with
-that issue.
+Pins the user's Jira board URL in a BrowserSurface so the board is always one
+click away from the Home surface. Sign in to Jira once via the browser; the
+cookie session persists across restarts (shared dataStoreKey `"browser"`).
 
-This widget uses an Atlassian **API token**, not your password. API tokens can
-be revoked independently at
-https://id.atlassian.com/manage-profile/security/api-tokens.
+## Setup
 
-## Storage keys
+On first use, the widget shows a paste-URL form. Paste any Jira board URL (e.g.
+`https://myorg.atlassian.net/jira/software/projects/PROJ/boards`) and click
+**Pin board**. The URL is validated and written to storage. Subsequent activations
+go directly to the board.
 
-All three keys live in the widget's own namespace (`jira-my-issues`). Readable
-from any namespace via `services.storage.get(namespace: "jira-my-issues",
-key: ...)`. Writable only through the widget's own storage surface
-(`services.storage.set(key:value:)` from within the widget, or
-`task42 storage set` from the CLI).
+**No API token or email/credential form** — authentication is through the
+embedded browser. Sign in to Jira the first time you open the widget; the session
+is kept automatically.
+
+## Storage key
 
 | Full address | Type | Description |
 |---|---|---|
-| `jira-my-issues/base` | string | Atlassian site base URL, e.g. `https://myorg.atlassian.net` (no trailing slash). |
-| `jira-my-issues/email` | string | Email of the Atlassian account whose issues to list. |
-| `jira-my-issues/token` | string | Atlassian API token (not a password). |
+| `jira-my-issues/board` | string | The pinned Jira board URL. |
 
-## Setting credentials via the CLI
+The key lives in the widget's own namespace (`jira-my-issues`). On the Home
+surface it is backed by the project-level `home-widget-storage.json` file
+(`~/.work42/task42/projects/<slug>/home-widget-storage.json`). On a task session
+it is backed by `task_storage` (per-task).
 
-Values must be valid JSON strings (double-quoted). The shell outer quoting
-wraps the JSON string, so use single quotes to avoid escaping:
-
-```bash
-# Set the Atlassian site base URL
-task42 storage set <task-id> jira-my-issues/base '"https://myorg.atlassian.net"'
-
-# Set the account email
-task42 storage set <task-id> jira-my-issues/email '"you@example.com"'
-
-# Set the API token (generate at https://id.atlassian.com/manage-profile/security/api-tokens)
-task42 storage set <task-id> jira-my-issues/token '"ATATT3xFfGF0..."'
+Read from any namespace:
+```swift
+services.storage.get(namespace: "jira-my-issues", key: "board")
 ```
 
-After setting all three keys the widget will fetch and display assigned issues
-on its next activation (open the widget or re-open the tab).
-
-## Reading stored values
-
-```bash
-# Read the stored base URL
-task42 storage get <task-id> jira-my-issues/base
-
-# List all keys in the widget's namespace
-task42 storage list <task-id> jira-my-issues
+Write (from the widget's own storage surface):
+```swift
+services.storage.set(key: "board", value: .string(boardURL))
 ```
 
-## Clearing credentials
+## Changing the board URL
 
+Click the **Change board** button (bottom-right of the widget while the board is
+open). This clears the stored URL and returns the widget to the paste-URL form.
+Enter a new board URL and click **Pin board**.
+
+Alternatively, from the CLI:
 ```bash
-task42 storage delete <task-id> jira-my-issues/base
-task42 storage delete <task-id> jira-my-issues/email
-task42 storage delete <task-id> jira-my-issues/token
-```
+# Set a new board URL (JSON-encoded string)
+task42 storage set <task-id> jira-my-issues/board '"https://myorg.atlassian.net/jira/software/projects/PROJ/boards"'
 
-Clearing any credential returns the widget to the setup form on next open.
+# Clear the stored URL (returns widget to the empty-state form)
+task42 storage delete <task-id> jira-my-issues/board
+```
 
 ## Widget lifecycle
 
-1. **Setup state** — shown when any credential is missing. Presents a form
-   collecting the base URL, email, and API token. On submit, credentials are
-   saved to the widget's namespace and issues are fetched immediately.
+1. **Empty state** — shown on first use (no URL stored). Presents a text field
+   for the board URL. On submit the URL is validated and written to storage;
+   the widget transitions immediately to the Board state.
 
-2. **Loading state** — shown while the Jira REST API request is in flight.
-   The widget runs:
-   ```
-   curl -s --max-time 15 -u <email>:<token>
-     "<base>/rest/api/3/search?jql=assignee=currentUser()+AND+statusCategory!=Done&fields=summary,status&maxResults=50"
-   ```
-   via `services.shell` (never blocking the render path).
+2. **Loading** — a brief spinner while the stored URL is read from storage on
+   activate. Prevents flashing the empty-state form before the URL loads.
 
-3. **Loaded state** — one row per issue. Each row shows:
-   - Issue key (e.g. `PROJ-123`, monospaced, accent-colored)
-   - Summary text (up to two lines)
-   - Status chip (e.g. "In Progress")
-   - "Start work session" button
+3. **Board state** — `BrowserSurface` rendering the pinned Jira board. The full
+   page is shown (no CSS selector isolation). A **Change board** button is always
+   visible in the bottom-right corner to return to the empty state.
 
-   An empty result list is shown with a clear "No assigned issues" message,
-   never a silent blank tile.
+## "Start Task Session" action-area button
 
-4. **Error state** — shown on any failure (non-parseable response, curl
-   non-zero exit, storage unavailable). Names the problem and the remedy.
-   Provides a "Retry" button and a "Reconfigure" button to update credentials.
+A **Start Task Session** button appears in the tab action-area bar (and in the
+command palette under `widget.jira-my-issues.start-task-session`) when the Jira
+board browser is open. The button is:
 
-## "Start work session" button
+- **Enabled** only when the browser's current URL contains `/browse/` — i.e. the
+  user has navigated from the board to a specific Jira issue page
+  (e.g. `https://myorg.atlassian.net/browse/PROJ-123`).
+- **Dimmed** when the browser is on the board itself or any other page.
 
-Each row's button computes `<base>/browse/<KEY>` and calls:
-
+When clicked (or executed from the palette), the button fires:
 ```
-services.intents.execute(id: "global.new.task.jira", params: ["url": .string(issueURL)])
+services.intents.execute(
+  id: "global.new.task",
+  params: ["url": .string(currentURL)]
+)
 ```
 
-The `global.new.task.jira` intent (AC17/AC18) creates a task session seeded
-with `jira/url = <issueURL>` and opens it. If the session already exists it
-is re-focused. The existing "New Task" sheet intent is unaffected.
+This creates (or re-focuses) a task session seeded with the issue URL. The
+`global.new.task` intent reads the `url` parameter and opens the task with the
+Jira widget pre-loaded to that issue.
 
-## No background polling
+## Browser login
 
-The widget fetches once on activation and on manual "Refresh". There is no
-background watch loop in v1. Use the Refresh button in the toolbar to
-re-fetch.
-
-## Jira query
-
-The widget always fetches with:
-
-```
-jql=assignee=currentUser()+AND+statusCategory!=Done&fields=summary,status&maxResults=50
-```
-
-The `currentUser()` function resolves to the account identified by the stored
-email + API token credentials. Up to 50 issues are returned; pagination is
-not implemented in v1.
+The widget uses `dataStoreKey: "browser"` — the same persistent cookie store as
+the built-in Browser and Jira widgets. Signing in to Jira in any one of these
+surfaces keeps the session for all of them. There is no separate login for the
+board widget.
