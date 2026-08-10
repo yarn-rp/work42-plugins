@@ -86,7 +86,7 @@ work42-plugins/
     plugin.yaml
     widgets/
       github/          GitHub PR browser widget
-      github-prs/      Open-PRs list widget (scaffold; Widget.swift in subtask .10)
+      github-prs/      Home-surface browser widget: one tab per workspace repo's /pulls page
     skills/
       using-github/    Plugin-level skill: using both GitHub widgets together
     tab-templates/
@@ -95,7 +95,7 @@ work42-plugins/
     plugin.yaml
     widgets/
       jira/            Jira issue browser widget
-      jira-my-issues/  Assigned-issues list widget (scaffold; Widget.swift in subtask .11)
+      jira-my-issues/  Home-surface board browser widget: pinned Jira board URL, no API token
     skills/
       using-jira/      Plugin-level skill: using both Jira widgets together
     tab-templates/

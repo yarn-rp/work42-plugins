@@ -2,10 +2,12 @@
 name: using-github
 description: |
   How to use the Work42 GitHub plugin together: the github PR browser widget
-  and the github-prs list widget. Covers the shared storage namespace
-  (github/prs), the [system event] delivery scheme, the github-prs list with
-  its Start code review session button, and the global.review.pr palette
-  intent. Install this plugin with: work42 plugin install <path-to-github-plugin>
+  and the github-prs Home-surface browser widget. Covers the github PR browser
+  widget (session-scoped, github/prs storage, [system event] delivery), the
+  github-prs Home widget (one browser tab per workspace repo, no gh CLI needed,
+  action-center "Start code review session" enabled on /pull/<N> URLs), and the
+  global.review.pr palette intent. Install this plugin with:
+  work42 plugin install <path-to-github-plugin>
 ---
 
 # Using the GitHub plugin
@@ -15,7 +17,7 @@ PR workflow coverage inside Work42.
 
 ## The two widgets
 
-### widget:github — PR browser
+### widget:github — PR browser (session-scoped)
 
 The `github` widget renders one embedded browser tab per pull request attached
 to the current session. It runs a 60-second background watch loop via
@@ -26,25 +28,48 @@ fingerprinted `[system event]`s so the agent is always aware of PR activity.
 Use this widget in a **task session** or a **patrol code-review session** where
 you know which specific PR you are working on.
 
-### widget:github-prs — open PRs list
+Storage: the widget reads and writes `github/prs` (JSON array of PR objects) in
+the session's `github` namespace.
 
-The `github-prs` widget runs `gh pr list --author @me --json number,title,url,headRefName`
-to fetch all of your currently open pull requests and renders one row per PR.
-Each row shows the PR title, repository, and a **Start code review session**
-button.
+### widget:github-prs — Home-surface PRs browser
 
-Clicking **Start code review session** on a row executes the palette intent
-`global.review.pr` with that PR's URL. Work42 then opens (or re-focuses) a
-code-review patrol session for that PR, with the `github` widget pre-seeded
-with the PR URL so the browser and watch loop start immediately.
+The `github-prs` widget is a **Home-surface browser widget**. It enumerates git
+repositories in the workspace root via `services.shell` (no `gh` CLI required),
+reads each repo's `remote.origin.url`, and opens one `BrowserSurface` tab per
+repo at `https://github.com/<owner>/<repo>/pulls`.
 
-Use this widget on the **Home surface** or in an unbound (plain) session as a
-dashboard for all your in-flight PRs.
+Use this widget on the **Home surface** to browse open PRs across all workspace
+repos. It does not read or write the `github/prs` task-storage key — it
+discovers repos fresh on every activation.
+
+**Action-center button — "Start code review session"**
+
+The button appears in the action center while `github-prs` is active. It is:
+
+- **Enabled** when the active tab's URL matches a GitHub PR page
+  (URL path contains `/pull/<N>`).
+- **Dimmed but visible** when the active tab is on a PR list or any other
+  GitHub page.
+
+Its enabled state is driven by `WidgetIntentSpec.isEnabled` — a render-time
+closure that reads the current URL from the widget's `BrowserWidgetModel`.
+
+Clicking the enabled button fires:
+
+```swift
+services.intents.execute(
+    id: "global.review.pr",
+    params: ["url": .string(currentPRURL)]
+)
+```
+
+This opens or re-focuses the code-review patrol session for that PR via
+`PatrolOpener.openReusingWorktree` and `SessionFactory.createPatrolSession`.
 
 ## Shared storage namespace: github/prs
 
-Both widgets share the `github` storage namespace. The key `github/prs` holds
-a JSON array of PR objects:
+The `github` (session) widget uses the `github` storage namespace. The key
+`github/prs` holds a JSON array of PR objects:
 
 ```json
 [
@@ -56,10 +81,8 @@ a JSON array of PR objects:
 ]
 ```
 
-The `github` widget reads and writes this key via `services.storage` (its own
-writable namespace, since widget id == storage namespace == `"github"`).
-The `github-prs` widget reads it for real-time status badges alongside the
-`gh pr list` output when the user is in a session context.
+The `github-prs` Home widget does **not** use this key — it discovers repos
+from the workspace root via shell.
 
 Agents can read or write `github/prs` directly via the CLI:
 
@@ -111,26 +134,24 @@ services.intents.execute(id: "global.review.pr", params: ["url": prURL])
 The host handler calls `PatrolOpener.openReusingWorktree` and
 `SessionFactory.createPatrolSession`, then opens the session in Chat. The
 result is indistinguishable from clicking "Review a PR" in the command palette
-and pasting the URL — but fully automated from the `github-prs` list row.
+and pasting the URL — but fully automated from the `github-prs` action-center
+button.
 
 ## Tab template: GitHub Review
 
 The plugin ships a **GitHub Review** tab template (UUID
-`1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d`) that opens both widgets in one tab:
-`widget:github-prs` in the left column and `widget:github` in the right. Open
-it from the ⌘⇧T picker once the plugin is installed.
+`1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d`) that opens `widget:github-prs` on
+the Home surface. Open it from the ⌘⇧T picker once the plugin is installed.
 
-## gh availability
+## gh availability (github widget only)
 
-`gh` must be installed and authenticated (`gh auth login`) for both widgets to
-work. If `gh` is unavailable or unauthenticated:
+`gh` must be installed and authenticated (`gh auth login`) for the **`github`**
+session widget to function. The `github-prs` Home widget uses only `git` and
+does not require `gh`.
 
-- `github` widget: shows a banner ("gh unavailable: …") in the empty state;
-  the browser surface is still accessible for any already-attached PRs.
-- `github-prs` widget: shows a named error state ("gh unavailable — run gh
-  auth login") rather than a blank tile.
-
-Neither widget crashes or silently fails — degradation is always visible.
+If `gh` is unavailable or unauthenticated, the `github` widget shows a banner
+("gh unavailable: …") in the empty state; the browser surface is still
+accessible for any already-attached PRs.
 
 ## Installation
 
