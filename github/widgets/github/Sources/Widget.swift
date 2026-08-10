@@ -994,8 +994,13 @@ private struct PRSelectionBubble: View {
         let services = services
         Task { @MainActor in
             var label = fallbackLabel
+            // `--repo owner/repo` — the session cwd is the multi-repo patrol
+            // CONTAINER (not a git repo), so gh cannot infer the repo from
+            // the working directory; a bare `gh pr diff <n>` fails there.
             if let ref,
-               let result = try? await services.shell.run(command: "gh pr diff \(ref.number)"),
+               let result = try? await services.shell.run(
+                   command: "\(enrichedPathPrefix) && gh pr diff \(ref.number) --repo \(ref.owner)/\(ref.repo)"
+               ),
                result.exitCode == 0,
                let anchor = PRDiffLocator.locate(
                    patch: result.stdout, fileHint: fileHint, selection: text
