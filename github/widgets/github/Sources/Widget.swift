@@ -12,11 +12,16 @@
 //   Two+ PRs     → BrowserSurface with replaceTabs for each entry; + wires to
 //                  attach form; × calls detach (removes from storage).
 //
-// WATCHER:
-//   activate() starts a Swift-concurrency Task that loops with a 60-second poll.
-//   Each cycle: load github/prs → gh pr view + gh api inline comments (both via
-//   services.shell) → diff → task42 event for new occurrences.
-//   deactivate() cancels the task. Never blocks the main actor.
+// WATCHER (bug/widgets-in-background-are-not-working):
+//   The watch loop has moved OFF the view path into GitHubBackgroundAgent, which
+//   conforms to WidgetBackgroundAgent (Work42WidgetKit). The host creates ONE
+//   agent per (session × widget) pair, calls start(services:) when the session
+//   is alive, and stop() on dormancy/quit — independently of view mounting.
+//
+//   GitHubPRWidget.activate/deactivate now handle VIEW concerns only:
+//   services for the view, browserModel, selection state, BrowserSurfaceCache.
+//   The widget conforms to Work42WidgetBackground so the host discovers and
+//   starts the background agent (AC10 — no double-polling).
 //
 // STORAGE CONVENTION (SKILL.md):
 //   Read any namespace: services.storage.get(namespace: "github", key: "prs")
@@ -126,8 +131,8 @@ struct PRSnapshot: Sendable {
 }
 
 /// Aggregate of one PR's header-worthy state — feeds the session-header
-/// labels (`Work42WidgetHeaderLabels`). Derived from a `PRSnapshot` each
-/// watch cycle; stored on the widget's `@Observable` state so the host
+/// labels (`WidgetBackgroundAgent.headerLabels`). Derived from a `PRSnapshot`
+/// each watch cycle; stored on the agent's `@Observable` state so the host
 /// strip re-renders when CI or reviews move.
 struct PRHeaderState: Sendable, Equatable {
     var author: String
@@ -414,6 +419,283 @@ private func bodySnippet(_ body: String, limit: Int = 140) -> String {
 /// The app may be launched via Finder with a minimal PATH that omits these.
 private let enrichedPathPrefix = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin\""
 
+// MARK: - GitHubBackgroundAgent
+
+/// Per-(session × widget) background agent for the GitHub PR widget.
+///
+/// The host creates ONE instance per (session × widget) pair via
+/// `GitHubPRWidget.makeBackgroundAgent()`, calls `start(services:)` when the
+/// session becomes alive, and `stop()` on dormancy / layout removal / hot-reload /
+/// app quit — decoupled from view mounting (AC1, AC3, AC4, AC10).
+///
+/// ## What lives here (moved from GitHubPRWidget)
+/// - The 60-second poll loop (`startWatcher` / `poll`)
+/// - `lastSeen` / `seededFingerprints` per-session state
+/// - `github/prs` status/merged_at writes via `services.storage`
+/// - `[system event]` delivery via `task42 event` / `patrol42 event`
+/// - Header label computation and storage (`headerLabels` — @Observable-backed
+///   so the host's header-strip render pass registers a dependency)
+///
+/// ## What stays on GitHubPRWidget (view path)
+/// - `activate` / `deactivate` — view services, browserModel, selection, popover
+/// - `prs`, `syncTabs`, `loadAndSyncPRs` — browser tab management
+/// - `attach` / `detach` — UI-driven PR list mutations
+///
+/// ## Idle-cheap contract (AC8)
+/// A poll cycle where `github/prs` is empty or absent performs the storage read
+/// ONLY — zero `gh` spawns. The `guard !currentPRs.isEmpty else { return }` gate
+/// is the explicit enforcement point.
+///
+/// ## Header labels (authoritative source)
+/// `headerLabels` replaces the defunct `Work42WidgetHeaderLabels` singleton.
+/// The singleton's `headerStates` dict lived on the widget class (shared across
+/// all sessions) — a cross-session contamination source. Each agent owns its own
+/// `headerStates`, so labels are correctly session-scoped (AC3).
+@Observable
+@MainActor
+final class GitHubBackgroundAgent: WidgetBackgroundAgent {
+
+    // MARK: - WidgetBackgroundAgent requirement
+
+    /// Session-scoped header label chips. @Observable-backed: mutating this dict
+    /// in a poll cycle triggers only the header strip's render pass, not the whole
+    /// widget grid. Empty until the first successful poll.
+    var headerLabels: [WidgetHeaderLabel] = []
+
+    // MARK: - Internal poll state (session-scoped — one instance per session)
+
+    /// Last-seen snapshot per PR URL. Cleared on stop().
+    private var lastSeen: [String: PRSnapshot] = [:]
+    /// Baseline fingerprints per PR URL (seeded on first observation without
+    /// event delivery, suppressing "replay" of pre-agent history). Cleared on stop().
+    private var seededFingerprints: [String: Set<String>] = [:]
+    /// Latest per-PR header aggregate, keyed by PR URL. Updated each poll cycle;
+    /// drives `headerLabels` recomputation.
+    private var headerStates: [String: PRHeaderState] = [:]
+
+    /// The running poll loop task. nil when stopped.
+    private var watchTask: Task<Void, Never>?
+
+    // MARK: - WidgetBackgroundAgent lifecycle
+
+    func start(services: WidgetBackgroundServices) {
+        watchTask?.cancel()
+        watchTask = Task { @MainActor [weak self] in
+            // Brief initial delay so the view can render before the first poll.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            while !Task.isCancelled {
+                await self?.poll(services: services)
+                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60 seconds
+            }
+        }
+    }
+
+    func stop() {
+        watchTask?.cancel()
+        watchTask = nil
+        // Clear all per-session state so a restarted agent starts fresh.
+        lastSeen.removeAll()
+        seededFingerprints.removeAll()
+        headerStates.removeAll()
+        headerLabels = []
+    }
+
+    // MARK: - Poll loop
+
+    private func poll(services: WidgetBackgroundServices) async {
+        // Load current PRs from task storage.
+        let currentPRs: [PREntry]
+        do {
+            if let value = try await services.storage.get(namespace: "github", key: "prs") {
+                currentPRs = PREntry.decode(from: value)
+            } else {
+                currentPRs = []
+            }
+        } catch {
+            return // Storage unavailable — skip this cycle
+        }
+
+        // AC8 — idle-cheap: when github/prs is empty or absent, we perform the
+        // storage read above ONLY. Zero gh spawns on idle sessions.
+        guard !currentPRs.isEmpty else { return }
+
+        var prsUpdated = false
+        var updatedPRs = currentPRs
+
+        for (idx, entry) in currentPRs.enumerated() {
+            guard let ref = parseGitHubPRRef(entry.url) else { continue }
+            let key = entry.url
+
+            // Fetch snapshot via gh
+            let ghJSON = "\(enrichedPathPrefix) && gh pr view \"\(entry.url)\" --json number,state,headRefOid,mergedAt,author,reviews,comments,statusCheckRollup"
+            let prResult: WidgetShellResult
+            do {
+                prResult = try await services.shell.run(command: ghJSON)
+            } catch {
+                continue // timeout or spawn failure — skip this PR
+            }
+
+            if prResult.exitCode != 0 {
+                // gh unavailable or unauthenticated — skip this PR.
+                continue
+            }
+
+            guard var snap = parsePRSnapshot(from: prResult.stdout, prURL: entry.url) else { continue }
+
+            // Fetch inline review comments (secondary call, degrades gracefully)
+            let inlineCmd = "\(enrichedPathPrefix) && gh api \"\(ref.inlineCommentsEndpoint)\" --paginate 2>/dev/null"
+            if let inlineResult = try? await services.shell.run(command: inlineCmd),
+               inlineResult.exitCode == 0 {
+                let inline = parseInlineComments(from: inlineResult.stdout)
+                snap = PRSnapshot(
+                    number: snap.number, state: snap.state, headRefOid: snap.headRefOid,
+                    mergedAt: snap.mergedAt, author: snap.author,
+                    reviews: snap.reviews, comments: snap.comments,
+                    reviewComments: inline, checks: snap.checks
+                )
+            }
+
+            // Update the per-PR header aggregate for this session's label strip.
+            let newHeaderState = PRHeaderState(from: snap)
+            if headerStates[key] != newHeaderState {
+                headerStates[key] = newHeaderState
+            }
+
+            let prior = lastSeen[key]
+
+            if prior == nil {
+                // First observation: seed baseline fingerprints without delivering.
+                seededFingerprints[key] = baselineFingerprints(for: snap)
+            } else {
+                // Subsequent poll: diff and deliver new events.
+                let events = newEvents(from: prior, to: snap, ref: ref)
+                for (fp, msg) in events {
+                    let baseline = seededFingerprints[key] ?? []
+                    guard !baseline.contains(fp) else { continue }
+                    await deliverEvent(services: services, message: msg, fingerprint: fp)
+                }
+            }
+
+            // Terminal-state block runs every poll (self-healing, deduped by task42 event).
+            if let (fp, msg) = terminalStateEvent(for: snap, ref: ref) {
+                await deliverEvent(services: services, message: msg, fingerprint: fp)
+                // Update status / merged_at in storage when state changes.
+                let newStatus = snap.state == "MERGED" ? "merged" : "closed"
+                if updatedPRs[idx].status != newStatus {
+                    updatedPRs[idx].status = newStatus
+                    updatedPRs[idx].merged_at = snap.mergedAt
+                    prsUpdated = true
+                }
+            } else if entry.status != "open" && snap.state == "OPEN" {
+                // Reopened
+                updatedPRs[idx].status = "open"
+                updatedPRs[idx].merged_at = nil
+                prsUpdated = true
+            }
+
+            lastSeen[key] = snap
+        }
+
+        // Persist status/merged_at updates back to storage when they changed.
+        // Uses services.storage.set (own namespace "github") — no shell indirection.
+        // Note: the view's prs array is NOT updated here; it refreshes on the next
+        // activate → loadAndSyncPRs call (documented UX gap: tab status badges
+        // update only on re-activate, not live while the panel is visible).
+        if prsUpdated {
+            do {
+                try await services.storage.set(key: "prs", value: PREntry.encode(updatedPRs))
+            } catch {
+                // Write failed — skip; will retry on next poll.
+            }
+        }
+
+        // Recompute the session-header labels from the freshly-updated headerStates.
+        updateHeaderLabels(prs: currentPRs)
+    }
+
+    /// Recompute `headerLabels` from `headerStates`. Called at the end of each
+    /// successful poll cycle. Labels the FIRST PR only (patrol sessions have one
+    /// primary PR; labeling a full multi-PR set would spam the strip).
+    private func updateHeaderLabels(prs: [PREntry]) {
+        guard let entry = prs.first, let st = headerStates[entry.url] else {
+            headerLabels = []
+            return
+        }
+        var labels: [WidgetHeaderLabel] = []
+
+        if !st.author.isEmpty {
+            labels.append(WidgetHeaderLabel(
+                text: "@\(st.author)", systemIcon: "person.crop.circle",
+                iconURL: URL(string: "https://github.com/\(st.author).png?size=40"),
+                tint: .neutral, url: URL(string: "https://github.com/\(st.author)")
+            ))
+        }
+
+        if st.checksTotal > 0 {
+            let checksURL = URL(string: "\(entry.url)/checks")
+            if st.checksFailed > 0 {
+                labels.append(WidgetHeaderLabel(
+                    text: st.checksFailed == 1 ? "CI: 1 failing" : "CI: \(st.checksFailed) failing",
+                    systemIcon: "xmark.circle.fill", tint: .failure, url: checksURL
+                ))
+            } else if st.checksPending > 0 {
+                labels.append(WidgetHeaderLabel(
+                    text: "CI running", systemIcon: "clock.fill",
+                    tint: .warning, url: checksURL
+                ))
+            } else {
+                labels.append(WidgetHeaderLabel(
+                    text: "CI passing", systemIcon: "checkmark.circle.fill",
+                    tint: .success, url: checksURL
+                ))
+            }
+        }
+
+        if st.changesRequested {
+            labels.append(WidgetHeaderLabel(
+                text: "Changes requested", systemIcon: "exclamationmark.bubble.fill",
+                tint: .warning, url: URL(string: entry.url)
+            ))
+        } else if st.approvals > 0 {
+            labels.append(WidgetHeaderLabel(
+                text: st.approvals == 1 ? "1 approval" : "\(st.approvals) approvals",
+                systemIcon: "checkmark.seal.fill", tint: .success,
+                url: URL(string: entry.url)
+            ))
+        }
+
+        headerLabels = labels
+    }
+
+    // MARK: - Event delivery
+
+    /// Deliver one event via the session's event command.
+    ///
+    /// - Task sessions: `task42 event "$WORK42_TASK_ID" '<msg>' --fingerprint '<fp>'`
+    ///   (WORK42_TASK_ID is set by the shell context for task sessions).
+    /// - Patrol sessions: `patrol42 event "$WORK42_PATROL_ID" '<msg>' --fingerprint '<fp>'`
+    ///   (WORK42_PATROL_ID is set by the shell context for patrol sessions).
+    ///
+    /// When neither env var is set (Home surface or plain session), the command
+    /// is skipped. Non-zero exit is logged but never crashes the watcher.
+    private func deliverEvent(services: WidgetBackgroundServices, message: String, fingerprint: String) async {
+        // Escape the message for sh single-quote embedding.
+        let safeMsgParts = message.components(separatedBy: "'").joined(separator: "'\"'\"'")
+        let safeFP = fingerprint.replacingOccurrences(of: "'", with: "'\"'\"'")
+        // Dispatch to the right CLI based on which env var is set.
+        // The `if [ -n ... ]` guard skips silently on Home/plain surfaces.
+        let cmd = """
+            \(enrichedPathPrefix)
+            if [ -n "$WORK42_TASK_ID" ]; then
+              task42 event "$WORK42_TASK_ID" '\(safeMsgParts)' --fingerprint '\(safeFP)'
+            elif [ -n "$WORK42_PATROL_ID" ]; then
+              patrol42 event "$WORK42_PATROL_ID" '\(safeMsgParts)' --fingerprint '\(safeFP)'
+            fi
+            """
+        _ = try? await services.shell.run(command: cmd)
+    }
+}
+
 // MARK: - GitHubPRWidget
 
 /// The GitHub PR widget — pre-built, installed by default (feat/generalizations-of-features.8).
@@ -422,6 +704,11 @@ private let enrichedPathPrefix = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/loc
 /// Storage ns: reads `github/prs` via `services.storage.get(namespace: "github", key: "prs")`;
 ///             writes `github/prs` via `services.storage.set(key: "prs", value:)` — the
 ///             widget's writable namespace IS "github" so no shell indirection needed.
+///
+/// Background: conforms to `Work42WidgetBackground` so the host creates a
+/// `GitHubBackgroundAgent` per (session × widget) pair. The poll loop, event
+/// delivery, and header labels all live on the agent. `activate`/`deactivate`
+/// handle VIEW concerns only (AC10).
 @Observable
 @MainActor
 final class GitHubPRWidget: Work42Widget {
@@ -434,14 +721,10 @@ final class GitHubPRWidget: Work42Widget {
 
     // MARK: - Observed state (drives the view)
 
-    /// Current PR list from `github/prs`. Updated by the watcher and attach/detach.
+    /// Current PR list from `github/prs`. Updated by loadAndSyncPRs on activate
+    /// and by attach/detach. The background agent also updates storage, but the
+    /// view refreshes on re-activate (documented UX gap — no view-path poll per AC10).
     var prs: [PREntry] = []
-    /// Latest per-PR header aggregate (CI + review standing), keyed by PR
-    /// url. Written each watch cycle; read by `headerLabels` so the session
-    /// header strip re-renders live as CI/reviews move.
-    var headerStates: [String: PRHeaderState] = [:]
-    /// Non-nil when gh is unavailable / unauthenticated — shown in empty+degraded state.
-    var ghDegradedMessage: String? = nil
     /// Drives the attach-sheet presentation.
     var showingAttachForm: Bool = false
 
@@ -462,7 +745,6 @@ final class GitHubPRWidget: Work42Widget {
     // MARK: - Internal (not observed)
 
     private var services: SessionServices?
-    private var watchTask: Task<Void, Never>?
 
     /// The `BrowserWidgetModel` stored from the `configure:` closure of `BrowserSurface`.
     /// The selection overlay reads `model.activeLiveView?()` to wire `selectionHandler`
@@ -470,34 +752,33 @@ final class GitHubPRWidget: Work42Widget {
     /// Patrol42Core. Set to nil on `deactivate()`.
     var browserModel: BrowserWidgetModel?
 
-    /// Last-seen snapshot per PR URL, keyed by URL string. Cleared on deactivate.
-    private var lastSeen: [String: PRSnapshot] = [:]
-    /// Baseline fingerprints per PR URL (seeded on first observation, never delivered).
-    private var seededFingerprints: [String: Set<String>] = [:]
     /// Stable UUID → URL mapping so tab close → detach works.
     private var tabIDs: [String: UUID] = [:]
 
-    // MARK: - Lifecycle
+    // MARK: - Lifecycle (VIEW concerns only — AC10)
+    //
+    // The background poll loop has moved to GitHubBackgroundAgent. activate and
+    // deactivate now handle only view-scoped concerns: session services for the
+    // view, browser model, selection state, and BrowserSurfaceCache teardown.
 
     func activate(services: SessionServices) {
         self.services = services
         Task { @MainActor [weak self] in
             await self?.loadAndSyncPRs()
         }
-        startWatcher(services: services)
+        // NOTE: startWatcher is NOT called here. The host background agent owns
+        // the poll loop and calls GitHubBackgroundAgent.start(services:) separately.
+        // This eliminates the double-polling bug described in AC10.
     }
 
     func deactivate() {
-        watchTask?.cancel()
-        watchTask = nil
+        // View-scoped teardown only — the background agent manages its own lifecycle.
         services = nil
         browserModel = nil
         selectionText = ""
         selectionRect = .zero
         selectionFilePath = nil
         showingSelectionPopover = false
-        lastSeen.removeAll()
-        seededFingerprints.removeAll()
         BrowserSurfaceCache.shared.teardown(key: id)
     }
 
@@ -572,8 +853,10 @@ final class GitHubPRWidget: Work42Widget {
         guard let urlString = urlForTabID(tabID) else { return }
         let updated = prs.filter { $0.url != urlString }
         tabIDs.removeValue(forKey: urlString)
-        lastSeen.removeValue(forKey: urlString)
-        seededFingerprints.removeValue(forKey: urlString)
+        // Note: lastSeen and seededFingerprints live on the background agent.
+        // The agent will naturally skip this URL on its next poll since it is
+        // no longer in github/prs storage. Stale entries in the agent's
+        // lastSeen/seededFingerprints are harmless until the agent is stopped.
         _ = await writePRs(updated)
     }
 
@@ -595,165 +878,28 @@ final class GitHubPRWidget: Work42Widget {
         syncTabs()
         return nil
     }
+}
 
-    // MARK: - Watcher
+// MARK: - Work42WidgetBackground conformance
 
-    private func startWatcher(services: SessionServices) {
-        watchTask?.cancel()
-        watchTask = Task { @MainActor [weak self] in
-            // Brief initial delay so the view can render before the first poll.
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            while !Task.isCancelled {
-                await self?.poll(services: services)
-                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60 seconds
-            }
-        }
-    }
-
-    private func poll(services: SessionServices) async {
-        // Load current PRs
-        let currentPRs: [PREntry]
-        do {
-            if let value = try await services.storage.get(namespace: "github", key: "prs") {
-                currentPRs = PREntry.decode(from: value)
-            } else {
-                currentPRs = []
-            }
-        } catch {
-            return // Storage unavailable — skip this cycle
-        }
-
-        // Sync UI if the PR list changed out-of-band (CLI attach, agent, etc.)
-        if currentPRs.map(\.url) != prs.map(\.url) {
-            prs = currentPRs
-            syncTabs()
-        }
-
-        guard !currentPRs.isEmpty else { return }
-
-        var anyGhOk = false
-        var prsUpdated = false
-        var updatedPRs = currentPRs
-
-        for (idx, entry) in currentPRs.enumerated() {
-            guard let ref = parseGitHubPRRef(entry.url) else { continue }
-            let key = entry.url
-
-            // Fetch snapshot via gh
-            let ghJSON = "\(enrichedPathPrefix) && gh pr view \"\(entry.url)\" --json number,state,headRefOid,mergedAt,author,reviews,comments,statusCheckRollup"
-            let prResult: WidgetShellResult
-            do {
-                prResult = try await services.shell.run(command: ghJSON)
-            } catch {
-                continue // timeout or spawn failure — skip this PR
-            }
-
-            if prResult.exitCode != 0 {
-                // gh unavailable or unauthenticated
-                let stderr = prResult.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !stderr.isEmpty {
-                    ghDegradedMessage = "gh unavailable: \(stderr.prefix(200))"
-                }
-                continue
-            }
-            anyGhOk = true
-            ghDegradedMessage = nil
-
-            guard var snap = parsePRSnapshot(from: prResult.stdout, prURL: entry.url) else { continue }
-
-            // Fetch inline review comments (secondary call, degrades gracefully)
-            let inlineCmd = "\(enrichedPathPrefix) && gh api \"\(ref.inlineCommentsEndpoint)\" --paginate 2>/dev/null"
-            if let inlineResult = try? await services.shell.run(command: inlineCmd),
-               inlineResult.exitCode == 0 {
-                let inline = parseInlineComments(from: inlineResult.stdout)
-                snap = PRSnapshot(
-                    number: snap.number, state: snap.state, headRefOid: snap.headRefOid,
-                    mergedAt: snap.mergedAt, author: snap.author,
-                    reviews: snap.reviews, comments: snap.comments,
-                    reviewComments: inline, checks: snap.checks
-                )
-            }
-
-            // Feed the session-header labels from this cycle's snapshot.
-            let newHeaderState = PRHeaderState(from: snap)
-            if headerStates[key] != newHeaderState {
-                headerStates[key] = newHeaderState
-            }
-
-            let prior = lastSeen[key]
-
-            if prior == nil {
-                // First observation: seed baseline fingerprints without delivering.
-                seededFingerprints[key] = baselineFingerprints(for: snap)
-            } else {
-                // Subsequent poll: diff and deliver new events.
-                let events = newEvents(from: prior, to: snap, ref: ref)
-                for (fp, msg) in events {
-                    let baseline = seededFingerprints[key] ?? []
-                    guard !baseline.contains(fp) else { continue }
-                    await deliverEvent(services: services, message: msg, fingerprint: fp)
-                }
-            }
-
-            // Terminal-state block runs every poll (self-healing, deduped by task42 event).
-            if let (fp, msg) = terminalStateEvent(for: snap, ref: ref) {
-                await deliverEvent(services: services, message: msg, fingerprint: fp)
-                // Update status / merged_at in storage when state changes.
-                let newStatus = snap.state == "MERGED" ? "merged" : "closed"
-                if updatedPRs[idx].status != newStatus {
-                    updatedPRs[idx].status = newStatus
-                    updatedPRs[idx].merged_at = snap.mergedAt
-                    prsUpdated = true
-                }
-            } else if entry.status != "open" && snap.state == "OPEN" {
-                // Reopened
-                updatedPRs[idx].status = "open"
-                updatedPRs[idx].merged_at = nil
-                prsUpdated = true
-            }
-
-            lastSeen[key] = snap
-        }
-
-        // Persist status/merged_at updates back to storage when they changed.
-        // Uses services.storage.set (own namespace "github") — no shell indirection.
-        if prsUpdated {
-            do {
-                try await services.storage.set(key: "prs", value: PREntry.encode(updatedPRs))
-                prs = updatedPRs
-            } catch {
-                // Write failed — skip UI update; will retry on next poll.
-            }
-        }
-
-        _ = anyGhOk // suppress unused warning
-    }
-
-    /// Deliver one event via the session's event command.
-    ///
-    /// - Task sessions: `task42 event "$WORK42_TASK_ID" '<msg>' --fingerprint '<fp>'`
-    ///   (WORK42_TASK_ID is set by the shell context for task sessions).
-    /// - Patrol sessions: `patrol42 event "$WORK42_PATROL_ID" '<msg>' --fingerprint '<fp>'`
-    ///   (WORK42_PATROL_ID is set by the shell context for patrol sessions; see
-    ///   WidgetCommandRunner.Context.patrolId and AC13 in feat/generalizations-of-features).
-    ///
-    /// When neither env var is set (Home surface or plain session), the command
-    /// is skipped. Non-zero exit is logged but never crashes the watcher.
-    private func deliverEvent(services: SessionServices, message: String, fingerprint: String) async {
-        // Escape the message for sh single-quote embedding.
-        let safeMsgParts = message.components(separatedBy: "'").joined(separator: "'\"'\"'")
-        let safeFP = fingerprint.replacingOccurrences(of: "'", with: "'\"'\"'")
-        // Dispatch to the right CLI based on which env var is set.
-        // The `if [ -n ... ]` guard skips silently on Home/plain surfaces.
-        let cmd = """
-            \(enrichedPathPrefix)
-            if [ -n "$WORK42_TASK_ID" ]; then
-              task42 event "$WORK42_TASK_ID" '\(safeMsgParts)' --fingerprint '\(safeFP)'
-            elif [ -n "$WORK42_PATROL_ID" ]; then
-              patrol42 event "$WORK42_PATROL_ID" '\(safeMsgParts)' --fingerprint '\(safeFP)'
-            fi
-            """
-        _ = try? await services.shell.run(command: cmd)
+/// Opt-in background-execution capability (bug/widgets-in-background-are-not-working).
+///
+/// The host detects this conformance via `as? any Work42WidgetBackground` and calls
+/// `makeBackgroundAgent()` once per (session × widget) pair when the session becomes
+/// eligible. Each call MUST return a fresh, independent instance — shared state across
+/// calls would reintroduce the first-mount-services singleton bug.
+///
+/// Header label decision: `Work42WidgetHeaderLabels` singleton conformance is DROPPED.
+/// Rationale: the backing state (`headerStates`) has moved to `GitHubBackgroundAgent`
+/// for per-session isolation (AC3). Keeping the singleton conformance would require
+/// state duplication (widget AND agent each holding headerStates), which the spec
+/// explicitly names as a reason to drop the singleton. The agent's `headerLabels` is
+/// the authoritative source; the app reads it directly from the agent (host-side change
+/// handled by another Worker in the app repo).
+extension GitHubPRWidget: Work42WidgetBackground {
+    func makeBackgroundAgent() -> any WidgetBackgroundAgent {
+        // Fresh instance every call — per-session isolation (AC3).
+        GitHubBackgroundAgent()
     }
 }
 
@@ -1047,19 +1193,11 @@ private struct PREmptyStateView: View {
             Text("No PR yet")
                 .font(.system(size: DT.f13, weight: .medium))
 
-            if let degraded = widget.ghDegradedMessage {
-                Text(degraded)
-                    .font(.system(size: DT.f11))
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 360)
-            } else {
-                Text("Once the worker pushes a branch, the PR link lands here. Or paste a GitHub PR URL to track it now — the PR is rendered inside Work42, sign in to GitHub once and the session is kept.")
-                    .font(.system(size: DT.f11))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 360)
-            }
+            Text("Once the worker pushes a branch, the PR link lands here. Or paste a GitHub PR URL to track it now — the PR is rendered inside Work42, sign in to GitHub once and the session is kept.")
+                .font(.system(size: DT.f11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
 
             HStack(spacing: DT.s8) {
                 TextField("https://github.com/owner/repo/pull/123", text: $draftURL)
@@ -1165,65 +1303,6 @@ private struct PRAttachSheet: View {
                 widget.showingAttachForm = false
             }
         }
-    }
-}
-
-// MARK: - Session header labels (Work42WidgetHeaderLabels)
-
-/// Labels the widget contributes to the session header's metadata strip:
-/// author + CI standing + review standing for the primary (first) attached
-/// PR. Vendor knowledge stays here — the host renders the chips without
-/// knowing what "CI" or "approvals" mean. (The host's old PROwnerChip and
-/// its inline gh author fetch were REMOVED in favor of this label.)
-extension GitHubPRWidget: Work42WidgetHeaderLabels {
-    var headerLabels: [WidgetHeaderLabel] {
-        // Label the FIRST PR only — patrol sessions have one primary PR;
-        // labeling a whole multi-PR set would spam the strip.
-        guard let entry = prs.first, let st = headerStates[entry.url] else { return [] }
-        var labels: [WidgetHeaderLabel] = []
-
-        if !st.author.isEmpty {
-            labels.append(WidgetHeaderLabel(
-                text: "@\(st.author)", systemIcon: "person.crop.circle",
-                iconURL: URL(string: "https://github.com/\(st.author).png?size=40"),
-                tint: .neutral, url: URL(string: "https://github.com/\(st.author)")
-            ))
-        }
-
-        if st.checksTotal > 0 {
-            let checksURL = URL(string: "\(entry.url)/checks")
-            if st.checksFailed > 0 {
-                labels.append(WidgetHeaderLabel(
-                    text: st.checksFailed == 1 ? "CI: 1 failing" : "CI: \(st.checksFailed) failing",
-                    systemIcon: "xmark.circle.fill", tint: .failure, url: checksURL
-                ))
-            } else if st.checksPending > 0 {
-                labels.append(WidgetHeaderLabel(
-                    text: "CI running", systemIcon: "clock.fill",
-                    tint: .warning, url: checksURL
-                ))
-            } else {
-                labels.append(WidgetHeaderLabel(
-                    text: "CI passing", systemIcon: "checkmark.circle.fill",
-                    tint: .success, url: checksURL
-                ))
-            }
-        }
-
-        if st.changesRequested {
-            labels.append(WidgetHeaderLabel(
-                text: "Changes requested", systemIcon: "exclamationmark.bubble.fill",
-                tint: .warning, url: URL(string: entry.url)
-            ))
-        } else if st.approvals > 0 {
-            labels.append(WidgetHeaderLabel(
-                text: st.approvals == 1 ? "1 approval" : "\(st.approvals) approvals",
-                systemIcon: "checkmark.seal.fill", tint: .success,
-                url: URL(string: entry.url)
-            ))
-        }
-
-        return labels
     }
 }
 
