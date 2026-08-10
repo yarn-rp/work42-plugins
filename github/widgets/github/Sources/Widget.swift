@@ -1185,6 +1185,7 @@ extension GitHubPRWidget: Work42WidgetHeaderLabels {
         if !st.author.isEmpty {
             labels.append(WidgetHeaderLabel(
                 text: "@\(st.author)", systemIcon: "person.crop.circle",
+                iconURL: URL(string: "https://github.com/\(st.author).png?size=40"),
                 tint: .neutral, url: URL(string: "https://github.com/\(st.author)")
             ))
         }
