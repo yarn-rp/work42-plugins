@@ -1,93 +1,125 @@
 ---
 name: widget-github-prs
 description: |
-  How to use the github-prs widget (session tab kindId widget:github-prs).
-  This widget lists the current user's open GitHub pull requests (via
-  `gh pr list --author @me`) and renders one row per PR with a
-  "Start code review session" button. Clicking the button fires the
-  global.review.pr palette intent with the PR URL, opening or re-focusing
-  that PR's code-review session in one click. Requires the GitHub CLI (`gh`)
-  to be installed and authenticated.
+  How to use the github-prs widget (widget id: github-prs). This widget
+  renders one browser tab per git repository found in the workspace root,
+  opening each repo's GitHub pull-requests page
+  (https://github.com/<owner>/<repo>/pulls). It lives on the Home surface.
+  A "Start code review session" action-center button appears when the active
+  browser tab is viewing a specific PR page (/pull/<N>) and fires the
+  global.review.pr intent with that PR's URL. Requires git in PATH;
+  no gh CLI required.
 ---
 
 # GitHub PRs widget
 
 ## Overview
 
-The `github-prs` widget is a native list view that:
+The `github-prs` widget is a **Home-surface browser widget** that:
 
-- Fetches the **current user's open pull requests** on activate and on manual
-  refresh via `gh pr list --author @me --state open --json number,title,url,headRefName,repository --limit 50`.
-- Renders **one row per PR** showing: repository name, PR number, PR title,
-  and branch name.
-- Provides a **"Start code review session"** button on every row that fires
-  the `global.review.pr` palette intent with that PR's URL, opening (or
-  re-focusing) the code-review session in one click.
-- Shows a **friendly empty card** when you have no open PRs.
-- Shows a **fail-loud error card** with a named remedy when `gh` is missing or
-  unauthenticated — never a blank tile.
-- Exposes a **Refresh** intent (palette + action-area icon button) to re-run
-  the fetch on demand. No background polling.
+- Enumerates **git repositories** in the workspace root via `git` (no gh CLI).
+- Opens **one browser tab per repo** at its GitHub pull-requests page:
+  `https://github.com/<owner>/<repo>/pulls`.
+- Shows a **fail-loud error card** when no GitHub repos are found or when git
+  is unavailable — never a blank tile.
+- Exposes a **"Start code review session"** button in the **action center**
+  that appears ONLY when the active browser tab is viewing a specific PR page
+  (URL path matches `/pull/<N>`). Clicking it fires `global.review.pr(url:)`.
+
+## Placement
+
+**Home surface only.** The widget relies on `services.shell` running with cwd
+set to the workspace root, which is guaranteed only on the Home surface. It
+will not appear in the `+ Widget` menu on session, task, or meeting surfaces.
+
+## Repo enumeration
+
+On activation, the widget runs a shell script in the workspace root:
+
+1. If the root itself has a `.git` directory, it is used as the single repo.
+2. Otherwise, every immediate subdirectory with a `.git` directory is picked up
+   (the standard Work42 multi-repo workspace layout).
+
+For each git repo found, the widget reads `remote.origin.url` via:
+
+```bash
+git -C <dir> config --get remote.origin.url
+```
+
+The URL is parsed for the GitHub owner/repo (SSH shorthand, HTTPS, and SSH
+explicit forms are all supported). The resulting PRs-page URL is:
+
+```
+https://github.com/<owner>/<repo>/pulls
+```
 
 ## Requirements
 
 | Requirement | Details |
 |---|---|
-| GitHub CLI | `brew install gh` |
-| Authentication | `gh auth login` |
-| Scope | Reads public + private repos accessible to the authenticated user |
+| `git` | Must be installed and in PATH (Homebrew: `/opt/homebrew/bin/git`) |
+| GitHub remote | Each workspace repo must have `remote.origin.url` pointing to GitHub |
+| Browser sign-in | Sign in to GitHub once in the embedded browser; the session is shared across all GitHub browser widgets (`dataStoreKey: "github"`) |
 
-The widget will show an error card with the exact remedy command if `gh` is not
-installed or not authenticated.
+No `gh` CLI is needed — only `git`.
 
-## Row layout
+## Tabs
 
-Each PR row displays:
-- **Eyebrow** — `owner/repo #number`
-- **Title** — the PR title (wraps up to two lines)
-- **Branch** — `headRefName` (the source branch)
-- **Button** — "Start code review session"
+The widget renders **one browser tab per workspace repo**. The tab title is
+`owner/repo`. Switching between tabs shows different repos' PR lists.
 
-## Session launch
+## Action-center button — "Start code review session"
 
-The "Start code review session" button calls:
+The button appears in the **action center** (beside `+ Add Widget`) when this
+widget is active in the current tab. It is:
 
+- **Enabled** when the active tab's URL is a GitHub PR page
+  (path matches `/owner/repo/pull/<N>`, e.g. `.../pull/42`).
+- **Dimmed-but-visible** when the active tab is showing a PR list or any
+  other GitHub page.
+
+Clicking the enabled button fires:
+
+```swift
+services.intents.execute(
+    id: "global.review.pr",
+    params: ["url": .string(currentPRURL)]
+)
 ```
-services.intents.execute(id: "global.review.pr", params: ["url": .string(prURL)])
-```
 
-The host intent opens or re-focuses the patrol session for that PR's URL, reusing
-`PatrolOpener.openReusingWorktree` and `SessionFactory.createPatrolSession`.
+This opens or re-focuses the code-review patrol session for that PR.
 
-## Refresh
+## Error card
 
-Three ways to refresh the PR list:
+If enumeration fails (git not found, no repos, no GitHub remote), a
+fail-loud card is shown with:
 
-1. **Action-area button** — the `↻` icon button in the tab-bar row beside the
-   widget title.
-2. **Header button** — the `↻` button inside the widget's own header row.
-3. **Command palette** — search "Refresh PR List" (`⌘⇧P`).
+- A warning icon
+- A human-readable error message with the specific cause
+- A **Retry** button that re-runs enumeration
 
-## No storage dependency
+## No storage
 
-This widget does NOT read or write `github/prs` storage. It fetches live from
-GitHub on every refresh. The existing `github` widget and the `github-prs`
-widget are independent — both can be open in the same session.
+This widget does **not** read or write any `github/prs` storage. It discovers
+repos fresh on every activation. The existing `github` widget (which reads
+`github/prs` storage) and this widget are independent and can both be open.
 
 ## Agent usage
 
-Agents do not need to call this widget directly. To look up a user's open PRs
-programmatically, run:
+Agents do not call this widget directly. To enumerate workspace repos:
 
 ```bash
-gh pr list --author @me --state open --json number,title,url,headRefName,repository --limit 50
+# At the workspace root:
+for d in $(ls -d */); do
+  if [ -d "${d}.git" ]; then
+    url=$(git -C "${d%/}" config --get remote.origin.url 2>/dev/null)
+    echo "${d%/}: $url"
+  fi
+done
 ```
 
-To trigger a code-review session from an agent, call:
+To trigger a code-review session from an agent once you have a PR URL:
 
 ```bash
 task42 palette execute global.review.pr --param url=<PR_URL>
 ```
-
-(If the `task42 palette execute` command is available in the project's CLI
-version; otherwise use the widget's button or the palette directly.)
