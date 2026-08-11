@@ -20,15 +20,22 @@ description: |
 The `github` pre-built widget is a BrowserSurface-based multi-tab view that:
 
 - Renders **one browser tab per PR** from the `github/prs` storage array.
-- Runs a **background poll loop** (60-second interval) that fetches each PR via
-  `gh pr view` and delivers new activity as fingerprinted `[system event]`s.
+- Runs a **60-second background poll loop** inside `GitHubBackgroundAgent`, a
+  per-(session × widget) `WidgetBackgroundAgent` managed by `WidgetBackgroundHost`.
+  The loop runs while the session's ACP runner is alive and the widget is in the
+  session's saved layout — **independently of whether the session panel is open**.
+  The view (`activate`) handles browser model, selection state, and
+  `BrowserSurfaceCache` teardown only; it refreshes its PR tabs from storage on
+  each `activate` call (`loadAndSyncPRs`).
+- Delivers new PR activity as fingerprinted `[system event]`s via `task42 event`
+  (task sessions) or `patrol42 event` (patrol sessions).
 - Provides an **empty-state form** for paste-URL attach and a **+ button** for
   subsequent attaches when one or more tabs are already open.
 - Updates `status` and `merged_at` fields in `github/prs` automatically when a
   PR is merged or closed.
 
-The widget does NOT require `gh` to be installed — when `gh` is unavailable or
-unauthenticated, the poll loop degrades gracefully and shows a banner.
+If `gh` is missing or unauthenticated the agent skips that PR for the cycle and
+retries on the next poll — no banner is shown, no crash occurs.
 
 ## Storage convention
 
@@ -104,15 +111,16 @@ prevents re-delivery on tasks that were previously tracked by that service.
 
 ### Baseline seeding
 
-On the **first observation** of a PR, the widget computes the current
-fingerprint set and stores it in memory WITHOUT calling `task42 event`.
-This suppresses delivery of events that already happened before the widget was
-first activated on this task.
+On the **first observation** of a PR by a fresh agent instance, the agent
+computes the current fingerprint set and stores it in memory WITHOUT calling
+`task42 event`. This suppresses delivery of events that already happened before
+the agent was started on this session.
 
-Re-activation (deactivate + activate) resets the in-memory baseline. Since
-`task42 event` uses `ON CONFLICT DO NOTHING`, events that were delivered during
-a previous activation will not be re-delivered; events that were only seen
-(baseline-seeded) during a previous activation may fire on the next activation.
+Stopping and restarting the agent (dormancy expiry + session becoming alive
+again, layout removal + re-add, or `work42 widget reload`) resets the in-memory
+baseline. Since `task42 event` uses `ON CONFLICT DO NOTHING`, events that were
+delivered during a previous agent run will not be re-delivered; events that were
+only baseline-seeded may fire on the next start.
 
 ### Terminal state self-healing
 

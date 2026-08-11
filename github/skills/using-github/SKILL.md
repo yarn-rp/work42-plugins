@@ -20,10 +20,22 @@ PR workflow coverage inside Work42.
 ### widget:github — PR browser (session-scoped)
 
 The `github` widget renders one embedded browser tab per pull request attached
-to the current session. It runs a 60-second background watch loop via
-`services.shell` that polls each PR with `gh pr view` and `gh api …/comments`,
-then delivers new activity (reviews, comments, CI checks, merge/close) as
-fingerprinted `[system event]`s so the agent is always aware of PR activity.
+to the current session. It runs a 60-second background poll loop inside
+`GitHubBackgroundAgent`, a per-(session × widget) `WidgetBackgroundAgent`
+managed by `WidgetBackgroundHost`. The loop runs while the session's ACP runner
+is alive and the widget is in the session's saved layout — independently of
+whether the session panel is open, so events fire and header labels update even
+when the user is on Home or another session.
+
+Each poll calls `gh pr view` and `gh api …/comments`, diffs the snapshots, and
+delivers new activity (reviews, comments, CI checks, merge/close) as
+fingerprinted `[system event]`s. The session header shows live CI / approval
+chips sourced from the agent's `headerLabels` property, visible for any tab of
+the session (not just the active tab).
+
+The view (`activate`) refreshes its PR tab list from storage on each mount
+(`loadAndSyncPRs`) — browser tab status badges update on re-activate, not live
+while the panel is open (that is the agent's job).
 
 Use this widget in a **task session** or a **patrol code-review session** where
 you know which specific PR you are working on.
@@ -118,9 +130,12 @@ automatically — even across widget restarts and app relaunches.
 | PR closed | `state:closed:<prNumber>` | `state == CLOSED` (idempotent, every poll) |
 | PR reopened | `state:reopened:<prNumber>` | State transitions back to OPEN |
 
-The first time the widget observes a PR it seeds the current fingerprint set in
-memory (no delivery). This suppresses replay of events that already happened
-before the widget was first opened on this session.
+On the first poll of a fresh agent instance, the agent seeds the current
+fingerprint set in memory (no delivery). This suppresses replay of events that
+already happened before the agent started on this session. Stopping and
+restarting the agent (dormancy + session coming alive again, or `work42 widget
+reload`) resets the baseline; `ON CONFLICT DO NOTHING` prevents re-delivery of
+events already in `pending_updates`.
 
 ## global.review.pr intent
 
@@ -146,12 +161,14 @@ the Home surface. Open it from the ⌘⇧T picker once the plugin is installed.
 ## gh availability (github widget only)
 
 `gh` must be installed and authenticated (`gh auth login`) for the **`github`**
-session widget to function. The `github-prs` Home widget uses only `git` and
-does not require `gh`.
+session widget to poll for events. The `github-prs` Home widget uses only `git`
+and does not require `gh`.
 
-If `gh` is unavailable or unauthenticated, the `github` widget shows a banner
-("gh unavailable: …") in the empty state; the browser surface is still
-accessible for any already-attached PRs.
+If `gh` is unavailable or unauthenticated, `GitHubBackgroundAgent` skips the
+affected PR for that poll cycle and retries on the next one — no error banner is
+shown, no crash occurs. The browser surface remains accessible for already-
+attached PRs; the empty-state form shows a neutral "No PR yet" prompt regardless
+of `gh` availability.
 
 ## Installation
 
