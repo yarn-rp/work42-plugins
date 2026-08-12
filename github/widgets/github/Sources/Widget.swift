@@ -76,6 +76,7 @@ struct PRRef: Sendable {
     var repo: String
     var number: Int
     var displayName: String { "\(owner)/\(repo)#\(number)" }
+    var shortDisplayName: String { "\(repo)#\(number)" }
     var inlineCommentsEndpoint: String { "repos/\(owner)/\(repo)/pulls/\(number)/comments" }
 }
 
@@ -614,54 +615,56 @@ final class GitHubBackgroundAgent: WidgetBackgroundAgent {
     }
 
     /// Recompute `headerLabels` from `headerStates`. Called at the end of each
-    /// successful poll cycle. Labels the FIRST PR only (patrol sessions have one
-    /// primary PR; labeling a full multi-PR set would spam the strip).
+    /// successful poll cycle. Each usable PR contributes one ordered group:
+    /// identity first, followed by its concise CI and review status labels.
     private func updateHeaderLabels(prs: [PREntry]) {
-        guard let entry = prs.first, let st = headerStates[entry.url] else {
-            headerLabels = []
-            return
-        }
         var labels: [WidgetHeaderLabel] = []
 
-        if !st.author.isEmpty {
-            labels.append(WidgetHeaderLabel(
-                text: "@\(st.author)", systemIcon: "person.crop.circle",
-                iconURL: URL(string: "https://github.com/\(st.author).png?size=40"),
-                tint: .neutral, url: URL(string: "https://github.com/\(st.author)")
-            ))
-        }
+        for entry in prs {
+            guard let ref = parseGitHubPRRef(entry.url),
+                  let st = headerStates[entry.url] else { continue }
 
-        if st.checksTotal > 0 {
-            let checksURL = URL(string: "\(entry.url)/checks")
-            if st.checksFailed > 0 {
+            if !st.author.isEmpty {
                 labels.append(WidgetHeaderLabel(
-                    text: st.checksFailed == 1 ? "CI: 1 failing" : "CI: \(st.checksFailed) failing",
-                    systemIcon: "xmark.circle.fill", tint: .failure, url: checksURL
-                ))
-            } else if st.checksPending > 0 {
-                labels.append(WidgetHeaderLabel(
-                    text: "CI running", systemIcon: "clock.fill",
-                    tint: .warning, url: checksURL
-                ))
-            } else {
-                labels.append(WidgetHeaderLabel(
-                    text: "CI passing", systemIcon: "checkmark.circle.fill",
-                    tint: .success, url: checksURL
+                    text: "@\(st.author) · \(ref.shortDisplayName)",
+                    systemIcon: "person.crop.circle",
+                    iconURL: URL(string: "https://github.com/\(st.author).png?size=40"),
+                    tint: .neutral, url: URL(string: "https://github.com/\(st.author)")
                 ))
             }
-        }
 
-        if st.changesRequested {
-            labels.append(WidgetHeaderLabel(
-                text: "Changes requested", systemIcon: "exclamationmark.bubble.fill",
-                tint: .warning, url: URL(string: entry.url)
-            ))
-        } else if st.approvals > 0 {
-            labels.append(WidgetHeaderLabel(
-                text: st.approvals == 1 ? "1 approval" : "\(st.approvals) approvals",
-                systemIcon: "checkmark.seal.fill", tint: .success,
-                url: URL(string: entry.url)
-            ))
+            if st.checksTotal > 0 {
+                let checksURL = URL(string: "\(entry.url)/checks")
+                if st.checksFailed > 0 {
+                    labels.append(WidgetHeaderLabel(
+                        text: st.checksFailed == 1 ? "CI: 1 failing" : "CI: \(st.checksFailed) failing",
+                        systemIcon: "xmark.circle.fill", tint: .failure, url: checksURL
+                    ))
+                } else if st.checksPending > 0 {
+                    labels.append(WidgetHeaderLabel(
+                        text: "CI running", systemIcon: "clock.fill",
+                        tint: .warning, url: checksURL
+                    ))
+                } else {
+                    labels.append(WidgetHeaderLabel(
+                        text: "CI passing", systemIcon: "checkmark.circle.fill",
+                        tint: .success, url: checksURL
+                    ))
+                }
+            }
+
+            if st.changesRequested {
+                labels.append(WidgetHeaderLabel(
+                    text: "Changes requested", systemIcon: "exclamationmark.bubble.fill",
+                    tint: .warning, url: URL(string: entry.url)
+                ))
+            } else if st.approvals > 0 {
+                labels.append(WidgetHeaderLabel(
+                    text: st.approvals == 1 ? "1 approval" : "\(st.approvals) approvals",
+                    systemIcon: "checkmark.seal.fill", tint: .success,
+                    url: URL(string: entry.url)
+                ))
+            }
         }
 
         headerLabels = labels
