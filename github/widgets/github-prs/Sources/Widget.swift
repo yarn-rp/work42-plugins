@@ -31,6 +31,7 @@
 //
 // WIDGET ID: "github-prs" (unchanged — the loader keyed this slug).
 
+import Foundation
 import Observation
 import SwiftUI
 import Work42WidgetKit
@@ -436,6 +437,89 @@ private struct GitHubPRsBrowserView: View {
 // `nonisolated(unsafe)` local is required because MainActor.assumeIsolated
 // cannot return an UnsafeMutableRawPointer directly (not Sendable — see
 // reference_cdecl_mainactor_assumeisolated_pointer_sendable in MEMORY.md).
+
+// MARK: - Review-queue header label (feat/home-labels .9)
+
+/// PATH prefix so `gh` resolves under the widget's non-login shell (Homebrew /
+/// MacPorts locations), mirroring the single GitHub widget's agent.
+private let ghReviewPathPrefix =
+    "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin\""
+
+/// Background agent for the GitHub PRs board: publishes a single "N to review"
+/// header label — the count of OPEN PRs where the authenticated `gh` user is a
+/// requested reviewer. Uses the same `services.shell` + `WidgetBackgroundAgent`
+/// + `headerLabels` pattern as the single-PR widget's agent. Fail-soft: any `gh`
+/// failure (missing / unauthenticated / nonzero exit / unparseable JSON) leaves
+/// `headerLabels` empty — no error chip, no crash (AC15/AC16).
+@Observable
+@MainActor
+final class GitHubPRsReviewAgent: WidgetBackgroundAgent {
+
+    /// The board's contributed header labels. Empty until the first successful
+    /// poll finds N > 0. @Observable so the host re-renders the strip on change.
+    var headerLabels: [WidgetHeaderLabel] = []
+
+    private var watchTask: Task<Void, Never>?
+
+    func start(services: WidgetBackgroundServices) {
+        watchTask?.cancel()
+        watchTask = Task { @MainActor [weak self] in
+            // Brief initial delay so the board renders before the first gh spawn.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            while !Task.isCancelled {
+                await self?.poll(services: services)
+                try? await Task.sleep(nanoseconds: 120_000_000_000) // 2 minutes
+            }
+        }
+    }
+
+    func stop() {
+        watchTask?.cancel()
+        watchTask = nil
+        headerLabels = []
+    }
+
+    private func poll(services: WidgetBackgroundServices) async {
+        let cmd = "\(ghReviewPathPrefix) && gh search prs --review-requested=@me "
+            + "--state=open --json url --limit 100"
+        let result: WidgetShellResult
+        do {
+            result = try await services.shell.run(command: cmd)
+        } catch {
+            headerLabels = []           // spawn/timeout failure — fail soft
+            return
+        }
+        guard result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else {
+            headerLabels = []           // gh missing / unauth / unparseable — fail soft
+            return
+        }
+        let n = array.count
+        guard n > 0 else {
+            headerLabels = []
+            return
+        }
+        let reviewQueueURL = URL(
+            string: "https://github.com/pulls?q=is%3Aopen+is%3Apr+review-requested%3A%40me")
+        headerLabels = [
+            WidgetHeaderLabel(
+                text: "\(n) to review",
+                systemIcon: "eye",
+                tint: .warning,
+                url: reviewQueueURL
+            )
+        ]
+    }
+}
+
+extension GitHubPRsWidget: Work42WidgetBackground {
+    /// Fresh agent per (session × widget) pair — the host owns the lifecycle.
+    func makeBackgroundAgent() -> any WidgetBackgroundAgent {
+        GitHubPRsReviewAgent()
+    }
+}
 
 @_cdecl("work42_widget_sdk_version")
 public func work42_widget_sdk_version() -> Int32 { WidgetSDK.abiVersion }
