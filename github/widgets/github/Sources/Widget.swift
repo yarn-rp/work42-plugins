@@ -719,6 +719,10 @@ final class GitHubPRWidget: Work42Widget {
     let title = "GitHub PR"
     let icon = "arrow.triangle.pull"
 
+    /// Session surfaces only — a single PR belongs to a session, not the Home
+    /// dashboard (the `github-prs` board is the Home-facing widget). AC14.
+    var enabledLayouts: Set<WidgetLayout> { Set(WidgetLayout.allCases).subtracting([.home]) }
+
     // MARK: - Observed state (drives the view)
 
     /// Current PR list from `github/prs`. Updated by loadAndSyncPRs on activate
