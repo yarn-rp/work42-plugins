@@ -484,48 +484,56 @@ final class GitHubPRsReviewAgent: WidgetBackgroundAgent {
     }
 
     private func poll(services: WidgetBackgroundServices) async {
-        // 1. Enumerate THIS workspace's GitHub repos (same rule as the widget's
-        //    view). Review requests are counted only within these repos — not a
-        //    global GitHub list — so the chip reflects the workspace you're in.
+        // Enumerate THIS workspace's GitHub repos (same rule as the widget's
+        // view). Both counts are scoped to these repos — never a global list —
+        // so the chips reflect the workspace you're in.
         let repos = await workspaceRepoSlugs(services: services)
         guard !repos.isEmpty else { headerLabels = []; return }
-
-        // 2. Scope the review-requested query to those repos (`--repo` per repo).
         let repoArgs = repos.map { "--repo \($0)" }.joined(separator: " ")
-        let cmd = "\(ghReviewPathPrefix) && gh search prs --review-requested=@me "
-            + "--state=open --json url --limit 100 \(repoArgs)"
-        let result: WidgetShellResult
-        do {
-            result = try await services.shell.run(command: cmd)
-        } catch {
-            headerLabels = []           // spawn/timeout failure — fail soft
-            return
-        }
-        guard result.exitCode == 0,
+
+        // Two independent, workspace-scoped counts:
+        //  • "to review" — open, NON-DRAFT PRs that explicitly request my review.
+        //  • "in review" — ALL my open PRs (any draft state).
+        let toReview = await count(
+            services: services,
+            query: "gh search prs --review-requested=@me --state=open --draft=false "
+                + "--json url --limit 100 \(repoArgs)")
+        let inReview = await count(
+            services: services,
+            query: "gh search prs --author=@me --state=open "
+                + "--json url --limit 100 \(repoArgs)")
+
+        // Each chip shows only when its count > 0 ("to review" hides at 0). Both
+        // lead with the GitHub mark + brand color and carry NO url, so clicking
+        // focuses the GitHub PRs widget (host-side) rather than opening a browser.
+        var labels: [WidgetHeaderLabel] = []
+        if let n = toReview, n > 0 { labels.append(Self.ghLabel(count: n, suffix: "to review")) }
+        if let n = inReview, n > 0 { labels.append(Self.ghLabel(count: n, suffix: "in review")) }
+        headerLabels = labels
+    }
+
+    /// Run a `gh search prs … --json url` query (with the PATH prefix) and return
+    /// the result array's count, or nil on any failure (fail-soft — the caller
+    /// omits that chip).
+    private func count(services: WidgetBackgroundServices, query: String) async -> Int? {
+        let cmd = "\(ghReviewPathPrefix) && \(query)"
+        guard let result = try? await services.shell.run(command: cmd),
+              result.exitCode == 0,
               let data = result.stdout.data(using: .utf8),
               let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-        else {
-            headerLabels = []           // gh missing / unauth / unparseable — fail soft
-            return
-        }
+        else { return nil }
+        return array.count
+    }
 
-        // 3. Publish the chip: GitHub brand color + mark, short text, and NO url
-        //    (clicking focuses the GitHub PRs widget, wired host-side — it never
-        //    opens a browser).
-        let n = array.count
-        guard n > 0 else {
-            headerLabels = []
-            return
-        }
+    /// A GitHub-branded header label: mark + dark brand color + "N PR(s) <suffix>".
+    private static func ghLabel(count n: Int, suffix: String) -> WidgetHeaderLabel {
         let noun = n == 1 ? "PR" : "PRs"
-        headerLabels = [
-            WidgetHeaderLabel(
-                text: "\(n) \(noun) to review",
-                iconImageData: Self.githubMarkPNG,
-                brandColorHex: "#1F2328",   // GitHub dark
-                tint: .neutral
-            )
-        ]
+        return WidgetHeaderLabel(
+            text: "\(n) \(noun) \(suffix)",
+            iconImageData: githubMarkPNG,
+            brandColorHex: "#1F2328",   // GitHub dark
+            tint: .neutral
+        )
     }
 
     /// This workspace's GitHub `owner/repo` slugs — the workspace root if it is
