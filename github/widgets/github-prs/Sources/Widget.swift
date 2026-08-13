@@ -484,8 +484,16 @@ final class GitHubPRsReviewAgent: WidgetBackgroundAgent {
     }
 
     private func poll(services: WidgetBackgroundServices) async {
+        // 1. Enumerate THIS workspace's GitHub repos (same rule as the widget's
+        //    view). Review requests are counted only within these repos — not a
+        //    global GitHub list — so the chip reflects the workspace you're in.
+        let repos = await workspaceRepoSlugs(services: services)
+        guard !repos.isEmpty else { headerLabels = []; return }
+
+        // 2. Scope the review-requested query to those repos (`--repo` per repo).
+        let repoArgs = repos.map { "--repo \($0)" }.joined(separator: " ")
         let cmd = "\(ghReviewPathPrefix) && gh search prs --review-requested=@me "
-            + "--state=open --json url --limit 100"
+            + "--state=open --json url --limit 100 \(repoArgs)"
         let result: WidgetShellResult
         do {
             result = try await services.shell.run(command: cmd)
@@ -500,22 +508,54 @@ final class GitHubPRsReviewAgent: WidgetBackgroundAgent {
             headerLabels = []           // gh missing / unauth / unparseable — fail soft
             return
         }
+
+        // 3. Publish the chip: GitHub brand color + mark, short text, and NO url
+        //    (clicking focuses the GitHub PRs widget, wired host-side — it never
+        //    opens a browser).
         let n = array.count
         guard n > 0 else {
             headerLabels = []
             return
         }
-        let reviewQueueURL = URL(
-            string: "https://github.com/pulls?q=is%3Aopen+is%3Apr+review-requested%3A%40me")
-        let noun = n == 1 ? "Pull Request" : "Pull Requests"
+        let noun = n == 1 ? "PR" : "PRs"
         headerLabels = [
             WidgetHeaderLabel(
-                text: "\(n) \(noun) to Review",
+                text: "\(n) \(noun) to review",
                 iconImageData: Self.githubMarkPNG,
-                tint: .warning,
-                url: reviewQueueURL
+                brandColorHex: "#1F2328",   // GitHub dark
+                tint: .neutral
             )
         ]
+    }
+
+    /// This workspace's GitHub `owner/repo` slugs — the workspace root if it is
+    /// itself a repo, else its depth-1 git subdirs — mirroring the widget's own
+    /// enumeration (services.shell cwd is the workspace root on Home). Deduped;
+    /// empty when nothing resolves (→ no label).
+    private func workspaceRepoSlugs(services: WidgetBackgroundServices) async -> [String] {
+        let cmd = """
+            \(ghReviewPathPrefix)
+            if [ -d ".git" ]; then
+              _url=$(git config --get remote.origin.url 2>/dev/null)
+              [ -n "$_url" ] && printf '%s\\n' "$_url"
+            else
+              for _d in */; do
+                [ -d "${_d}.git" ] || continue
+                _url=$(git -C "${_d%/}" config --get remote.origin.url 2>/dev/null)
+                [ -n "$_url" ] && printf '%s\\n' "$_url"
+              done
+            fi
+            """
+        guard let result = try? await services.shell.run(command: cmd),
+              result.exitCode == 0 else { return [] }
+        var slugs: [String] = []
+        for line in result.stdout.split(separator: "\n", omittingEmptySubsequences: true) {
+            let url = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let (owner, repo) = parseGitHubOwnerRepo(url) {
+                slugs.append("\(owner)/\(repo)")
+            }
+        }
+        return Array(Set(slugs))
     }
 
     /// The GitHub mark (50×50 PNG) embedded as base64 so the "to review" chip
