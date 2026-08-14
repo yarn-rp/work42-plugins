@@ -95,6 +95,10 @@ final class JiraWidget: Work42Widget {
     let title = "Jira"
     let icon = "ticket"
 
+    /// Session surfaces only — a single issue belongs to a session, not the Home
+    /// dashboard (the `jira-my-issues` board is the Home-facing widget). AC14.
+    var enabledLayouts: Set<WidgetLayout> { Set(WidgetLayout.allCases).subtracting([.home]) }
+
     // MARK: - Observed state
 
     /// The Jira issue URL loaded from storage. nil = empty state (paste-URL form).

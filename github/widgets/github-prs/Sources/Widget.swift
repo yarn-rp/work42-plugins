@@ -31,6 +31,7 @@
 //
 // WIDGET ID: "github-prs" (unchanged — the loader keyed this slug).
 
+import Foundation
 import Observation
 import SwiftUI
 import Work42WidgetKit
@@ -436,6 +437,148 @@ private struct GitHubPRsBrowserView: View {
 // `nonisolated(unsafe)` local is required because MainActor.assumeIsolated
 // cannot return an UnsafeMutableRawPointer directly (not Sendable — see
 // reference_cdecl_mainactor_assumeisolated_pointer_sendable in MEMORY.md).
+
+// MARK: - Review-queue header label (feat/home-labels .9)
+
+/// PATH prefix so `gh` resolves under the widget's non-login shell (Homebrew /
+/// MacPorts locations), mirroring the single GitHub widget's agent.
+private let ghReviewPathPrefix =
+    "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin\""
+
+/// GitHub mark (50x50 PNG) as base64 — leads the "to review" chip with the
+/// brand logo. Sourced from the app's github-logo.png.
+private let githubMarkPNGBase64 = "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"
+
+/// Background agent for the GitHub PRs board: publishes a single "N to review"
+/// header label — the count of OPEN PRs where the authenticated `gh` user is a
+/// requested reviewer. Uses the same `services.shell` + `WidgetBackgroundAgent`
+/// + `headerLabels` pattern as the single-PR widget's agent. Fail-soft: any `gh`
+/// failure (missing / unauthenticated / nonzero exit / unparseable JSON) leaves
+/// `headerLabels` empty — no error chip, no crash (AC15/AC16).
+@Observable
+@MainActor
+final class GitHubPRsReviewAgent: WidgetBackgroundAgent {
+
+    /// The board's contributed header labels. Empty until the first successful
+    /// poll finds N > 0. @Observable so the host re-renders the strip on change.
+    var headerLabels: [WidgetHeaderLabel] = []
+
+    private var watchTask: Task<Void, Never>?
+
+    func start(services: WidgetBackgroundServices) {
+        watchTask?.cancel()
+        watchTask = Task { @MainActor [weak self] in
+            // Brief initial delay so the board renders before the first gh spawn.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            while !Task.isCancelled {
+                await self?.poll(services: services)
+                try? await Task.sleep(nanoseconds: 120_000_000_000) // 2 minutes
+            }
+        }
+    }
+
+    func stop() {
+        watchTask?.cancel()
+        watchTask = nil
+        headerLabels = []
+    }
+
+    private func poll(services: WidgetBackgroundServices) async {
+        // Enumerate THIS workspace's GitHub repos (same rule as the widget's
+        // view). Both counts are scoped to these repos — never a global list —
+        // so the chips reflect the workspace you're in.
+        let repos = await workspaceRepoSlugs(services: services)
+        guard !repos.isEmpty else { headerLabels = []; return }
+        let repoArgs = repos.map { "--repo \($0)" }.joined(separator: " ")
+
+        // Two independent, workspace-scoped counts:
+        //  • "to review" — open, NON-DRAFT PRs that explicitly request my review.
+        //  • "in review" — ALL my open PRs (any draft state).
+        let toReview = await count(
+            services: services,
+            query: "gh search prs --review-requested=@me --state=open --draft=false "
+                + "--json url --limit 100 \(repoArgs)")
+        let inReview = await count(
+            services: services,
+            query: "gh search prs --author=@me --state=open "
+                + "--json url --limit 100 \(repoArgs)")
+
+        // Each chip shows only when its count > 0 ("to review" hides at 0). Both
+        // lead with the GitHub mark + brand color and carry NO url, so clicking
+        // focuses the GitHub PRs widget (host-side) rather than opening a browser.
+        var labels: [WidgetHeaderLabel] = []
+        if let n = toReview, n > 0 { labels.append(Self.ghLabel(count: n, suffix: "to review")) }
+        if let n = inReview, n > 0 { labels.append(Self.ghLabel(count: n, suffix: "in review")) }
+        headerLabels = labels
+    }
+
+    /// Run a `gh search prs … --json url` query (with the PATH prefix) and return
+    /// the result array's count, or nil on any failure (fail-soft — the caller
+    /// omits that chip).
+    private func count(services: WidgetBackgroundServices, query: String) async -> Int? {
+        let cmd = "\(ghReviewPathPrefix) && \(query)"
+        guard let result = try? await services.shell.run(command: cmd),
+              result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return nil }
+        return array.count
+    }
+
+    /// A GitHub-branded header label: mark + dark brand color + "N PR(s) <suffix>".
+    private static func ghLabel(count n: Int, suffix: String) -> WidgetHeaderLabel {
+        let noun = n == 1 ? "PR" : "PRs"
+        return WidgetHeaderLabel(
+            text: "\(n) \(noun) \(suffix)",
+            iconImageData: githubMarkPNG,
+            brandColorHex: "#1F2328",   // GitHub dark
+            tint: .neutral
+        )
+    }
+
+    /// This workspace's GitHub `owner/repo` slugs — the workspace root if it is
+    /// itself a repo, else its depth-1 git subdirs — mirroring the widget's own
+    /// enumeration (services.shell cwd is the workspace root on Home). Deduped;
+    /// empty when nothing resolves (→ no label).
+    private func workspaceRepoSlugs(services: WidgetBackgroundServices) async -> [String] {
+        let cmd = """
+            \(ghReviewPathPrefix)
+            if [ -d ".git" ]; then
+              _url=$(git config --get remote.origin.url 2>/dev/null)
+              [ -n "$_url" ] && printf '%s\\n' "$_url"
+            else
+              for _d in */; do
+                [ -d "${_d}.git" ] || continue
+                _url=$(git -C "${_d%/}" config --get remote.origin.url 2>/dev/null)
+                [ -n "$_url" ] && printf '%s\\n' "$_url"
+              done
+            fi
+            """
+        guard let result = try? await services.shell.run(command: cmd),
+              result.exitCode == 0 else { return [] }
+        var slugs: [String] = []
+        for line in result.stdout.split(separator: "\n", omittingEmptySubsequences: true) {
+            let url = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let (owner, repo) = parseGitHubOwnerRepo(url) {
+                slugs.append("\(owner)/\(repo)")
+            }
+        }
+        return Array(Set(slugs))
+    }
+
+    /// The GitHub mark (50×50 PNG) embedded as base64 so the "to review" chip
+    /// leads with the unambiguous brand logo instead of a generic SF Symbol.
+    /// Decoded once; nil if decoding somehow fails (the chip then shows text
+    /// only — still correct).
+    static let githubMarkPNG: Data? = Data(base64Encoded: githubMarkPNGBase64)
+}
+
+extension GitHubPRsWidget: Work42WidgetBackground {
+    /// Fresh agent per (session × widget) pair — the host owns the lifecycle.
+    func makeBackgroundAgent() -> any WidgetBackgroundAgent {
+        GitHubPRsReviewAgent()
+    }
+}
 
 @_cdecl("work42_widget_sdk_version")
 public func work42_widget_sdk_version() -> Int32 { WidgetSDK.abiVersion }

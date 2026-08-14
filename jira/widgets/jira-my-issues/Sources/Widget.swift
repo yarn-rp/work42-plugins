@@ -67,6 +67,10 @@ final class JiraBoardWidget: Work42Widget {
     let title = "Jira Board"
     let icon = "ticket"
 
+    /// Home-only board, matching `github-prs` — the personal Jira dashboard
+    /// belongs on Home, not inside a session. AC14.
+    var enabledLayouts: Set<WidgetLayout> { [.home] }
+
     // MARK: - Observed state
 
     /// The board URL loaded from storage. nil = empty state (paste-URL form).
