@@ -17,17 +17,20 @@
 //   model.replaceTabs (via configure closure and BrowserSurface.model(forKey:)).
 //
 // ACTION-AREA INTENT:
-//   "Start code review session" — placement: [.palette, .actionArea].
+//   "Review GitHub PR" — placement: [.palette, .actionArea].
 //   isEnabled closure returns true ONLY when the active tab's URL (model.urlDraft)
 //   matches a PR page (/pull/<N> path). Enabled = the button appears in the
-//   action center and fires global.review.pr(url:).
+//   action center, resolves the PR head branch with `gh`, and fires the typed
+//   session.open.codeReview intent with branch + initial github/prs metadata.
 //
 // FAIL LOUD:
 //   If no GitHub repos are found or the shell fails, renders a fail-loud error
 //   card with a retry button — never a blank tile.
 //
-// NO STORAGE: Does not read or write any storage namespace.
-// NO GH CLI: Uses only `git` for remote-URL resolution.
+// SESSION METADATA: Seeds github/prs in the new session so the separate
+// `github` session widget can render and monitor the selected pull request.
+// Uses `git` for repository discovery and authenticated `gh` only when the
+// user asks to open the currently viewed PR as a Code Review session.
 //
 // WIDGET ID: "github-prs" (unchanged — the loader keyed this slug).
 
@@ -40,6 +43,8 @@ import Work42WidgetKit
 
 /// One workspace git repository resolved to its GitHub PRs page URL.
 struct RepoInfo: Sendable, Equatable {
+    /// RepoDiscovery-compatible workspace key ("." for a root repo).
+    var repoKey: String
     /// "owner/repo" — used as the browser tab title.
     var ownerRepo: String
     /// https://github.com/<owner>/<repo>/pulls
@@ -113,14 +118,22 @@ private func splitGitHubOwnerRepo(_ path: String) -> (owner: String, repo: Strin
 
 /// Return true when `urlString` points to a GitHub PR page (path: /owner/repo/pull/<N>).
 private func isGitHubPRPage(_ urlString: String) -> Bool {
+    githubPRReference(urlString) != nil
+}
+
+private func githubPRReference(_ urlString: String) -> (ownerRepo: String, number: Int)? {
     guard !urlString.isEmpty,
           let url = URL(string: urlString),
           let host = url.host,
           host.lowercased().hasSuffix("github.com")
-    else { return false }
+    else { return nil }
     let parts = url.pathComponents.filter { $0 != "/" }
     // Expected: ["owner", "repo", "pull", "N", ...]
-    return parts.count >= 4 && parts[2].lowercased() == "pull" && Int(parts[3]) != nil
+    guard parts.count >= 4,
+          parts[2].lowercased() == "pull",
+          let number = Int(parts[3])
+    else { return nil }
+    return ("\(parts[0].lowercased())/\(parts[1].lowercased())", number)
 }
 
 // MARK: - PATH enrichment
@@ -159,8 +172,8 @@ final class GitHubPRsWidget: Work42Widget {
         [
             WidgetIntentSpec(
                 name: "start-code-review",
-                title: "Start Code Review Session",
-                icon: "play.fill",
+                title: "Review GitHub PR",
+                icon: "arrow.triangle.pull",
                 keywords: ["review", "code review", "pr", "pull request", "session"],
                 placement: [.palette, .actionArea],
                 actionAreaStyle: .labeled,
@@ -172,11 +185,57 @@ final class GitHubPRsWidget: Work42Widget {
                 perform: { [weak self] in
                     guard let self else { return }
                     let urlString = BrowserSurface.model(forKey: self.id)?.urlDraft ?? ""
-                    guard isGitHubPRPage(urlString) else { return }
+                    guard let reference = githubPRReference(urlString) else { return }
                     guard let svc = self.services else { return }
+                    guard case .ready(let repos) = self.loadState,
+                          let repo = repos.first(where: {
+                              $0.ownerRepo.lowercased() == reference.ownerRepo
+                          })
+                    else {
+                        throw WidgetServiceError(
+                            message: "This pull request is not from a repository in the workspace.",
+                            suggestion: "Open a PR for one of this widget's repository tabs."
+                        )
+                    }
+                    let result = try await svc.shell.run(command:
+                        "\(ghReviewPathPrefix) && gh pr view \(reference.number) "
+                        + "--repo \(reference.ownerRepo) --json headRefName --jq .headRefName"
+                    )
+                    let branch = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard result.exitCode == 0, !branch.isEmpty else {
+                        let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                        throw WidgetServiceError(
+                            message: "GitHub could not resolve this pull request's branch.",
+                            suggestion: detail.isEmpty
+                                ? "Install and authenticate the gh CLI, then try again."
+                                : detail
+                        )
+                    }
                     try await svc.intents.execute(
-                        id: "global.review.pr",
-                        params: ["url": .string(urlString)]
+                        id: "session.open.codeReview",
+                        params: [
+                            "kind": .string("codeReview"),
+                            "codeReview": .object([
+                                "branchesByRepository": .object([
+                                    // This board discovers GitHub through each
+                                    // repository's `origin`, so provide the
+                                    // concrete remote ref the host can track in
+                                    // its newly-created review worktree.
+                                    repo.repoKey: .string("origin/\(branch)"),
+                                ]),
+                            ]),
+                            "initialWidgetStorage": .object([
+                                "github": .object([
+                                    "prs": .array([
+                                        .object([
+                                            "url": .string(urlString),
+                                            "status": .string("open"),
+                                            "merged_at": .null,
+                                        ]),
+                                    ]),
+                                ]),
+                            ]),
+                        ]
                     )
                 }
             ),
@@ -274,6 +333,7 @@ final class GitHubPRsWidget: Work42Widget {
                   let prsURL = URL(string: "https://github.com/\(owner)/\(repo)/pulls")
             else { continue }
             repos.append(RepoInfo(
+                repoKey: String(parts[0]),
                 ownerRepo: "\(owner)/\(repo)",
                 url: prsURL,
                 tabID: UUID()

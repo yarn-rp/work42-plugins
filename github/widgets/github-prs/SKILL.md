@@ -5,10 +5,10 @@ description: |
   renders one browser tab per git repository found in the workspace root,
   opening each repo's GitHub pull-requests page
   (https://github.com/<owner>/<repo>/pulls). It lives on the Home surface.
-  A "Start code review session" action-center button appears when the active
-  browser tab is viewing a specific PR page (/pull/<N>) and fires the
-  global.review.pr intent with that PR's URL. Requires git in PATH;
-  no gh CLI required.
+  A GitHub-branded "Review GitHub PR" action-center button is enabled when the
+  active browser tab is viewing a specific PR page (/pull/<N>). It resolves
+  the PR branch with gh and fires the typed session.open.codeReview intent.
+  Requires git and an authenticated gh CLI in PATH to start a review.
 ---
 
 # GitHub PRs widget
@@ -22,9 +22,10 @@ The `github-prs` widget is a **Home-surface browser widget** that:
   `https://github.com/<owner>/<repo>/pulls`.
 - Shows a **fail-loud error card** when no GitHub repos are found or when git
   is unavailable — never a blank tile.
-- Exposes a **"Start code review session"** button in the **action center**
+- Exposes a **"Review GitHub PR"** button in the **action center**
   that appears ONLY when the active browser tab is viewing a specific PR page
-  (URL path matches `/pull/<N>`). Clicking it fires `global.review.pr(url:)`.
+  (URL path matches `/pull/<N>`). Clicking it resolves the head branch and
+  fires `session.open.codeReview` with typed arguments.
 
 ## Placement
 
@@ -61,14 +62,15 @@ https://github.com/<owner>/<repo>/pulls
 | GitHub remote | Each workspace repo must have `remote.origin.url` pointing to GitHub |
 | Browser sign-in | Sign in to GitHub once in the embedded browser; the session is shared across all GitHub browser widgets (`dataStoreKey: "github"`) |
 
-No `gh` CLI is needed — only `git`.
+Browsing needs only `git`. Starting a review uses authenticated `gh` to
+resolve the selected PR's head branch.
 
 ## Tabs
 
 The widget renders **one browser tab per workspace repo**. The tab title is
 `owner/repo`. Switching between tabs shows different repos' PR lists.
 
-## Action-center button — "Start code review session"
+## Action-center button — “Review GitHub PR”
 
 The button appears in the **action center** (beside `+ Add Widget`) when this
 widget is active in the current tab. It is:
@@ -78,16 +80,22 @@ widget is active in the current tab. It is:
 - **Dimmed-but-visible** when the active tab is showing a PR list or any
   other GitHub page.
 
-Clicking the enabled button fires:
+Clicking the enabled button resolves the PR head branch, maps the GitHub repo
+to its workspace repository key, and fires:
 
 ```swift
 services.intents.execute(
-    id: "global.review.pr",
-    params: ["url": .string(currentPRURL)]
+    id: "session.open.codeReview",
+    params: [
+        "kind": .string("codeReview"),
+        "codeReview": .object(["branchesByRepository": .object([repoKey: .string(branch)])]),
+        "initialWidgetStorage": .object(["github": .object(["prs": prMetadata])]),
+    ]
 )
 ```
 
-This opens or re-focuses the code-review patrol session for that PR.
+This opens a provider-neutral Code Review session on the PR branch and seeds
+the session-scoped GitHub widget metadata.
 
 ## Error card
 
@@ -98,11 +106,12 @@ fail-loud card is shown with:
 - A human-readable error message with the specific cause
 - A **Retry** button that re-runs enumeration
 
-## No storage
+## Session metadata
 
-This widget does **not** read or write any `github/prs` storage. It discovers
-repos fresh on every activation. The existing `github` widget (which reads
-`github/prs` storage) and this widget are independent and can both be open.
+This Home widget discovers repositories fresh on every activation and does not
+use Home storage. When it starts a review, it seeds `github/prs` in the new
+session's widget storage so the separate `github` session widget can render and
+monitor the selected PR.
 
 ## Agent usage
 
@@ -118,8 +127,10 @@ for d in $(ls -d */); do
 done
 ```
 
-To trigger a code-review session from an agent once you have a PR URL:
+To trigger a code-review session from an agent after resolving the workspace
+repository key and branch:
 
 ```bash
-task42 palette execute global.review.pr --param url=<PR_URL>
+task42 palette execute session.open.codeReview \
+  --params '{"kind":"codeReview","codeReview":{"branchesByRepository":{"<repo-key>":"origin/<branch>"}}}'
 ```

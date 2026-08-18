@@ -4,9 +4,9 @@ description: |
   How to use the Work42 GitHub plugin together: the github PR browser widget
   and the github-prs Home-surface browser widget. Covers the github PR browser
   widget (session-scoped, github/prs storage, [system event] delivery), the
-  github-prs Home widget (one browser tab per workspace repo, no gh CLI needed,
-  action-center "Start code review session" enabled on /pull/<N> URLs), and the
-  global.review.pr palette intent. Install this plugin with:
+  github-prs Home widget (one browser tab per workspace repo, authenticated gh
+  branch resolution, action-center "Review GitHub PR" enabled on /pull/<N>
+  URLs), and the typed session.open.codeReview intent. Install this plugin with:
   work42 plugin install <path-to-github-plugin>
 ---
 
@@ -37,7 +37,7 @@ The view (`activate`) refreshes its PR tab list from storage on each mount
 (`loadAndSyncPRs`) — browser tab status badges update on re-activate, not live
 while the panel is open (that is the agent's job).
 
-Use this widget in a **task session** or a **patrol code-review session** where
+Use this widget in a **task session** or a **Code Review session** where
 you know which specific PR you are working on.
 
 Storage: the widget reads and writes `github/prs` (JSON array of PR objects) in
@@ -54,7 +54,7 @@ Use this widget on the **Home surface** to browse open PRs across all workspace
 repos. It does not read or write the `github/prs` task-storage key — it
 discovers repos fresh on every activation.
 
-**Action-center button — "Start code review session"**
+**Action-center button — “Review GitHub PR”**
 
 The button appears in the action center while `github-prs` is active. It is:
 
@@ -66,17 +66,22 @@ The button appears in the action center while `github-prs` is active. It is:
 Its enabled state is driven by `WidgetIntentSpec.isEnabled` — a render-time
 closure that reads the current URL from the widget's `BrowserWidgetModel`.
 
-Clicking the enabled button fires:
+Clicking the enabled button uses authenticated `gh` to resolve the PR head
+branch, then fires:
 
 ```swift
 services.intents.execute(
-    id: "global.review.pr",
-    params: ["url": .string(currentPRURL)]
+    id: "session.open.codeReview",
+    params: [
+        "kind": .string("codeReview"),
+        "codeReview": .object(["branchesByRepository": branchMap]),
+        "initialWidgetStorage": .object(["github": .object(["prs": prMetadata])]),
+    ]
 )
 ```
 
-This opens or re-focuses the code-review patrol session for that PR via
-`PatrolOpener.openReusingWorktree` and `SessionFactory.createPatrolSession`.
+This opens a provider-neutral Code Review session and seeds its session-scoped
+GitHub metadata so the PR widget renders the selected pull request.
 
 ## Shared storage namespace: github/prs
 
@@ -137,32 +142,31 @@ restarting the agent (dormancy + session coming alive again, or `work42 widget
 reload`) resets the baseline; `ON CONFLICT DO NOTHING` prevents re-delivery of
 events already in `pending_updates`.
 
-## global.review.pr intent
+## session.open.codeReview intent
 
-The `global.review.pr` palette intent accepts a PR URL and opens (or
-re-focuses) the code-review session for that PR. Widgets fire it with:
+The typed Code Review intent accepts a provider-neutral repository branch map
+and optional opaque initial widget storage. The GitHub widget resolves the PR
+URL itself and supplies both:
 
 ```swift
-services.intents.execute(id: "global.review.pr", params: ["url": prURL])
+services.intents.execute(id: "session.open.codeReview", params: payload)
 ```
 
-The host handler calls `PatrolOpener.openReusingWorktree` and
-`SessionFactory.createPatrolSession`, then opens the session in Chat. The
-result is indistinguishable from clicking "Review a PR" in the command palette
-and pasting the URL — but fully automated from the `github-prs` action-center
-button.
+The host checks out the supplied branches without parsing GitHub data and
+persists `github/prs` opaquely in the new session's widget storage.
 
 ## Tab template: GitHub Review
 
 The plugin ships a **GitHub Review** tab template (UUID
-`1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d`) that opens `widget:github-prs` on
-the Home surface. Open it from the ⌘⇧T picker once the plugin is installed.
+`1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d`) that opens the session-scoped
+`widget:github`. Open it from the ⌘⇧T picker once the plugin is installed.
 
-## gh availability (github widget only)
+## gh availability
 
 `gh` must be installed and authenticated (`gh auth login`) for the **`github`**
-session widget to poll for events. The `github-prs` Home widget uses only `git`
-and does not require `gh`.
+session widget to poll for events and for the `github-prs` Home widget to resolve
+a viewed PR's head branch when starting a review. Browsing repository PR lists
+in the Home widget itself only requires `git`.
 
 If `gh` is unavailable or unauthenticated, `GitHubBackgroundAgent` skips the
 affected PR for that poll cycle and retries on the next one — no error banner is

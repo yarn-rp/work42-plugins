@@ -13,8 +13,8 @@ github/
     github/                     the github PR browser widget
       Sources/Widget.swift      Work42Widget implementation + @_cdecl entry points
       SKILL.md                  agent-facing skill: storage convention + CLI usage
-    github-prs/                 the github-prs list widget (subtask .10)
-      README.md                 scaffold stub — Widget.swift added by subtask .10
+    github-prs/                 the Home GitHub PR browser widget
+      README.md                 usage and launch-contract reference
   skills/
     using-github/
       SKILL.md                  plugin-level skill: how both widgets work together
@@ -39,11 +39,10 @@ hand-edit or commit them.
 
 ### widget:github-prs
 
-- Lists all open PRs authored by the current user via `gh pr list --author @me`.
-- One row per PR with a "Start code review session" button.
-- The button fires `services.intents.execute(id: "global.review.pr", params:
-  ["url": prURL])`, opening a code-review patrol session for that PR in one
-  click.
+- Opens one PR-list browser tab per GitHub repository in the workspace.
+- A GitHub-branded “Review GitHub PR” action for the currently viewed PR.
+- The action resolves the PR head branch and fires `session.open.codeReview`
+  with structured branch and initial widget-storage arguments.
 - Degrades to a named error state when `gh` is unavailable; never a blank tile.
 
 ## Installing
