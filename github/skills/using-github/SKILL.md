@@ -74,6 +74,7 @@ services.intents.execute(
     id: "session.open.codeReview",
     params: [
         "kind": .string("codeReview"),
+        "name": .string("Code Review: <PR title>"),
         "codeReview": .object(["branchesByRepository": branchMap]),
         "initialWidgetStorage": .object(["github": .object(["prs": prMetadata])]),
     ]
@@ -81,7 +82,10 @@ services.intents.execute(
 ```
 
 This opens a provider-neutral Code Review session and seeds its session-scoped
-GitHub metadata so the PR widget renders the selected pull request.
+GitHub metadata so the PR widget renders the selected pull request. The `name`
+parameter titles the session ("Code Review: <PR title>", falling back to
+"Code Review: PR #<number>" when the `gh` title lookup fails); omitted, the
+host keeps the kind's default title.
 
 ## Shared storage namespace: github/prs
 
@@ -144,9 +148,9 @@ events already in `pending_updates`.
 
 ## session.open.codeReview intent
 
-The typed Code Review intent accepts a provider-neutral repository branch map
-and optional opaque initial widget storage. The GitHub widget resolves the PR
-URL itself and supplies both:
+The typed Code Review intent accepts a provider-neutral repository branch map,
+an optional session display `name`, and optional opaque initial widget
+storage. The GitHub widget resolves the PR URL itself and supplies all three:
 
 ```swift
 services.intents.execute(id: "session.open.codeReview", params: payload)

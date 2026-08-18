@@ -88,17 +88,23 @@ board browser is open. The button is:
   (e.g. `https://myorg.atlassian.net/browse/PROJ-123`).
 - **Dimmed** when the browser is on the board itself or any other page.
 
-When clicked (or executed from the palette), the button fires:
+When clicked (or executed from the palette), the button fires the typed
+session intent, naming the task after the issue key parsed from the URL:
 ```
 services.intents.execute(
-  id: "global.new.task.jira",
-  params: ["url": .string(currentURL)]
+  id: "session.open.task",
+  params: [
+    "kind": .string("task"),
+    "task": .object(["name": .string("<ISSUE-KEY>"), "kind": .string("feature")]),
+    "initialWidgetStorage": .object(["jira": .object(["url": .string(currentURL)])]),
+  ]
 )
 ```
 
-This creates (or re-focuses) a task session seeded with the issue URL. The
-`global.new.task.jira` intent reads the `url` parameter, seeds `jira/url` into
-the new session, and opens the task with the Jira widget pre-loaded to that issue.
+This creates a task session titled with the issue key (e.g. `PROJ-123`),
+seeds `jira/url` into the task's storage so the Jira widget pre-loads that
+issue, and shows the host's blocking loading → error overlay while the
+session is set up.
 
 ## Browser login
 

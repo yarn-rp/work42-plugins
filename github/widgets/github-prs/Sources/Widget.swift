@@ -207,10 +207,21 @@ final class GitHubPRsWidget: Work42Widget {
                     // opaque git data and fetches/checks it out inside the
                     // normal session-creation overlay.
                     let reviewRef = "refs/pull/\(reference.number)/head"
+                    // Fail-soft title lookup: a nicer session name when `gh`
+                    // answers, "PR #N" when it doesn't. Never blocks launch.
+                    var prTitle = "PR #\(reference.number)"
+                    if let result = try? await svc.shell.run(command:
+                        "\(ghReviewPathPrefix) && gh pr view \(reference.number) "
+                        + "--repo \(reference.ownerRepo) --json title --jq .title"
+                    ), result.exitCode == 0 {
+                        let title = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !title.isEmpty { prTitle = title }
+                    }
                     try await svc.intents.execute(
                         id: "session.open.codeReview",
                         params: [
                             "kind": .string("codeReview"),
+                            "name": .string("Code Review: \(prTitle)"),
                             "codeReview": .object([
                                 "branchesByRepository": .object([
                                     repo.repoKey: .string(reviewRef),

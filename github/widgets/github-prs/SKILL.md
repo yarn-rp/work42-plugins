@@ -89,6 +89,7 @@ services.intents.execute(
     id: "session.open.codeReview",
     params: [
         "kind": .string("codeReview"),
+        "name": .string("Code Review: <PR title>"),
         "codeReview": .object(["branchesByRepository": .object([repoKey: .string("refs/pull/<number>/head")])]),
         "initialWidgetStorage": .object(["github": .object(["prs": prMetadata])]),
     ]
@@ -96,7 +97,10 @@ services.intents.execute(
 ```
 
 This opens a provider-neutral Code Review session on the PR branch and seeds
-the session-scoped GitHub widget metadata.
+the session-scoped GitHub widget metadata. The `name` is the session's display
+title — the widget resolves the PR title via `gh` fail-soft (falling back to
+"Code Review: PR #<number>" when `gh` is unavailable); the host applies it
+verbatim and keeps the kind's default title when the parameter is omitted.
 
 ## Error card
 
