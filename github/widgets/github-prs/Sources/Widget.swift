@@ -180,7 +180,12 @@ final class GitHubPRsWidget: Work42Widget {
                 isEnabled: { [weak self] in
                     guard let self else { return false }
                     let urlString = BrowserSurface.model(forKey: self.id)?.urlDraft ?? ""
-                    return isGitHubPRPage(urlString)
+                    guard let reference = githubPRReference(urlString),
+                          case .ready(let repos) = self.loadState
+                    else { return false }
+                    return repos.contains {
+                        $0.ownerRepo.lowercased() == reference.ownerRepo
+                    }
                 },
                 perform: { [weak self] in
                     guard let self else { return }
@@ -197,31 +202,18 @@ final class GitHubPRsWidget: Work42Widget {
                             suggestion: "Open a PR for one of this widget's repository tabs."
                         )
                     }
-                    let result = try await svc.shell.run(command:
-                        "\(ghReviewPathPrefix) && gh pr view \(reference.number) "
-                        + "--repo \(reference.ownerRepo) --json headRefName --jq .headRefName"
-                    )
-                    let branch = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard result.exitCode == 0, !branch.isEmpty else {
-                        let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                        throw WidgetServiceError(
-                            message: "GitHub could not resolve this pull request's branch.",
-                            suggestion: detail.isEmpty
-                                ? "Install and authenticate the gh CLI, then try again."
-                                : detail
-                        )
-                    }
+                    // GitHub exposes every PR head through this stable ref,
+                    // including PRs opened from forks. The host treats it as
+                    // opaque git data and fetches/checks it out inside the
+                    // normal session-creation overlay.
+                    let reviewRef = "refs/pull/\(reference.number)/head"
                     try await svc.intents.execute(
                         id: "session.open.codeReview",
                         params: [
                             "kind": .string("codeReview"),
                             "codeReview": .object([
                                 "branchesByRepository": .object([
-                                    // This board discovers GitHub through each
-                                    // repository's `origin`, so provide the
-                                    // concrete remote ref the host can track in
-                                    // its newly-created review worktree.
-                                    repo.repoKey: .string("origin/\(branch)"),
+                                    repo.repoKey: .string(reviewRef),
                                 ]),
                             ]),
                             "initialWidgetStorage": .object([

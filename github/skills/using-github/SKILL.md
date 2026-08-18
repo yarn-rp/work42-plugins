@@ -4,8 +4,8 @@ description: |
   How to use the Work42 GitHub plugin together: the github PR browser widget
   and the github-prs Home-surface browser widget. Covers the github PR browser
   widget (session-scoped, github/prs storage, [system event] delivery), the
-  github-prs Home widget (one browser tab per workspace repo, authenticated gh
-  branch resolution, action-center "Review GitHub PR" enabled on /pull/<N>
+  github-prs Home widget (one browser tab per workspace repo, stable GitHub PR
+  ref resolution, action-center "Review GitHub PR" enabled on /pull/<N>
   URLs), and the typed session.open.codeReview intent. Install this plugin with:
   work42 plugin install <path-to-github-plugin>
 ---
@@ -66,8 +66,8 @@ The button appears in the action center while `github-prs` is active. It is:
 Its enabled state is driven by `WidgetIntentSpec.isEnabled` — a render-time
 closure that reads the current URL from the widget's `BrowserWidgetModel`.
 
-Clicking the enabled button uses authenticated `gh` to resolve the PR head
-branch, then fires:
+Clicking the enabled button maps the URL to GitHub's stable
+`refs/pull/<number>/head` git ref, then fires:
 
 ```swift
 services.intents.execute(

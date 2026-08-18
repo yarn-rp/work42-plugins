@@ -41,9 +41,9 @@ hand-edit or commit them.
 
 - Opens one PR-list browser tab per GitHub repository in the workspace.
 - A GitHub-branded “Review GitHub PR” action for the currently viewed PR.
-- The action resolves the PR head branch and fires `session.open.codeReview`
+- The action resolves GitHub's stable pull-request head ref and fires `session.open.codeReview`
   with structured branch and initial widget-storage arguments.
-- Degrades to a named error state when `gh` is unavailable; never a blank tile.
+- Session creation failures stay visible in Work42's blocking error dialog.
 
 ## Installing
 

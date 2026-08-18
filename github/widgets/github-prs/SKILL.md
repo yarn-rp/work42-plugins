@@ -7,8 +7,9 @@ description: |
   (https://github.com/<owner>/<repo>/pulls). It lives on the Home surface.
   A GitHub-branded "Review GitHub PR" action-center button is enabled when the
   active browser tab is viewing a specific PR page (/pull/<N>). It resolves
-  the PR branch with gh and fires the typed session.open.codeReview intent.
-  Requires git and an authenticated gh CLI in PATH to start a review.
+  the PR to GitHub's stable pull-request head ref and fires the typed
+  session.open.codeReview intent. Starting a review uses git remote access;
+  it does not require the gh CLI.
 ---
 
 # GitHub PRs widget
@@ -24,7 +25,7 @@ The `github-prs` widget is a **Home-surface browser widget** that:
   is unavailable — never a blank tile.
 - Exposes a **"Review GitHub PR"** button in the **action center**
   that appears ONLY when the active browser tab is viewing a specific PR page
-  (URL path matches `/pull/<N>`). Clicking it resolves the head branch and
+  (URL path matches `/pull/<N>`). Clicking it resolves the stable PR head ref and
   fires `session.open.codeReview` with typed arguments.
 
 ## Placement
@@ -62,8 +63,8 @@ https://github.com/<owner>/<repo>/pulls
 | GitHub remote | Each workspace repo must have `remote.origin.url` pointing to GitHub |
 | Browser sign-in | Sign in to GitHub once in the embedded browser; the session is shared across all GitHub browser widgets (`dataStoreKey: "github"`) |
 
-Browsing needs only `git`. Starting a review uses authenticated `gh` to
-resolve the selected PR's head branch.
+Browsing and starting a review use `git`. Launch passes
+`refs/pull/<number>/head`, which also works for fork pull requests.
 
 ## Tabs
 
@@ -80,7 +81,7 @@ widget is active in the current tab. It is:
 - **Dimmed-but-visible** when the active tab is showing a PR list or any
   other GitHub page.
 
-Clicking the enabled button resolves the PR head branch, maps the GitHub repo
+Clicking the enabled button resolves the stable PR head ref, maps the GitHub repo
 to its workspace repository key, and fires:
 
 ```swift
@@ -88,7 +89,7 @@ services.intents.execute(
     id: "session.open.codeReview",
     params: [
         "kind": .string("codeReview"),
-        "codeReview": .object(["branchesByRepository": .object([repoKey: .string(branch)])]),
+        "codeReview": .object(["branchesByRepository": .object([repoKey: .string("refs/pull/<number>/head")])]),
         "initialWidgetStorage": .object(["github": .object(["prs": prMetadata])]),
     ]
 )
