@@ -122,9 +122,28 @@ final class JiraBoardWidget: Work42Widget {
                     let currentURL = model?.urlDraft ?? ""
                     guard !currentURL.isEmpty else { return }
                     guard let services = self.services else { return }
+                    // Task name from the issue key in ".../browse/<KEY>".
+                    // The typed session intent creates the task, seeds
+                    // jira/url so this widget loads the issue immediately,
+                    // and owns the loading/error overlay.
+                    let issueKey = currentURL
+                        .split(separator: "/browse/", maxSplits: 1)
+                        .last.map { String($0.split(separator: "?").first ?? $0) }
+                    let taskName = (issueKey?.isEmpty == false) ? issueKey! : "Jira Task"
                     try await services.intents.execute(
-                        id: "global.new.task.jira",
-                        params: ["url": .string(currentURL)]
+                        id: "session.open.task",
+                        params: [
+                            "kind": .string("task"),
+                            "task": .object([
+                                "name": .string(taskName),
+                                "kind": .string("feature"),
+                            ]),
+                            "initialWidgetStorage": .object([
+                                "jira": .object([
+                                    "url": .string(currentURL),
+                                ]),
+                            ]),
+                        ]
                     )
                 }
             )

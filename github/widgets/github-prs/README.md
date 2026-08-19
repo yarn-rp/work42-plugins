@@ -2,10 +2,11 @@
 
 Widget id: `github-prs`
 
-Lists the current user's open GitHub pull requests (via `gh pr list --author
-@me`) and renders one row per PR. Each row has a "Start code review session"
-button that fires the `global.review.pr` palette intent with the PR URL,
-opening (or re-focusing) that PR's code-review session in one click.
+Opens one GitHub pull-request browser tab per workspace repository. Its
+GitHub-branded “Review GitHub PR” action resolves the currently viewed PR to
+GitHub's stable `refs/pull/<number>/head` ref and fires `session.open.codeReview` with a typed repository branch
+map, a "Code Review: <PR title>" session name, and initial `github/prs`
+session metadata, opening that Code Review session in one click.
 
 Storage namespace: `github` (reads `github/prs` for real-time status if
 available).

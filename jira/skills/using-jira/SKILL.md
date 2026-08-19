@@ -5,8 +5,8 @@ description: |
   (session-scoped, jira/url storage) and the jira-my-issues Home-surface board
   browser widget (paste-URL-once, project-scoped storage, no API token). Covers
   the board URL persistence via the Home storage backend, the action-center
-  "Start task session" button (enabled on /browse/ URLs), and the
-  global.new.task.jira palette intent. Install with:
+  "Start task session" button (enabled on /browse/ URLs), and the typed
+  session.open.task intent it fires. Install with:
   work42 plugin install <path-to-jira-plugin>
 ---
 
@@ -61,17 +61,24 @@ The button appears in the action center while `jira-my-issues` is active. It is:
 Its enabled state is driven by `WidgetIntentSpec.isEnabled` — a render-time
 closure that reads the current URL from the widget's `BrowserWidgetModel`.
 
-Clicking the enabled button fires:
+Clicking the enabled button fires the typed session intent, naming the task
+after the issue key parsed from the URL:
 
 ```swift
 services.intents.execute(
-    id: "global.new.task.jira",
-    params: ["url": .string(currentIssueURL)]
+    id: "session.open.task",
+    params: [
+        "kind": .string("task"),
+        "task": .object(["name": .string("<ISSUE-KEY>"), "kind": .string("feature")]),
+        "initialWidgetStorage": .object(["jira": .object(["url": .string(currentIssueURL)])]),
+    ]
 )
 ```
 
-This creates (or re-opens) a task session seeded with that issue's `jira/url`
-and opens it with the `jira` widget pre-loaded to the issue.
+This creates a task session titled with the issue key, seeded with that
+issue's `jira/url`, and opens it with the `jira` widget pre-loaded to the
+issue. Session-creation failures stay visible in Work42's blocking error
+dialog.
 
 ## Storage
 
@@ -114,16 +121,12 @@ per project and survives app restarts.
 To clear the board URL and return the widget to the empty-state form, click
 **Change board** in the widget.
 
-## global.new.task.jira intent
+## session.open.task intent
 
-The `global.new.task.jira` palette intent accepts a Jira issue URL and creates
-(or re-opens) a task session seeded with that issue. Widgets fire it with:
-
-```swift
-services.intents.execute(id: "global.new.task.jira", params: ["url": issueURL])
-```
-
-The host handler runs the equivalent of:
+The typed `session.open.task` intent creates a task session from structured
+arguments: the task `name`/`kind`, and opaque `initialWidgetStorage` the host
+persists into the task's storage without interpreting it. The host runs the
+equivalent of:
 ```bash
 task42 create --name "PROJ-123" --type task --storage jira/url=<url>
 ```
