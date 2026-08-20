@@ -34,10 +34,15 @@ hand-edit or commit them.
 - Empty state: a paste-URL form that writes `jira/url` + the parsed `jira/key`.
 - Assigned state: full-page `BrowserSurface` for the issue, sharing the
   `"browser"` cookie jar with the built-in Browser widget — sign in once.
+- Declares Atlassian Cloud URLs to Work42's `Open Link` intent. A clicked link
+  navigates the in-memory browser only and does not write `jira/url` or
+  `jira/key`; URL routes, queries, and fragments are preserved.
 - "Change ticket" button returns to the paste-URL form.
 
 ### widget:jira-my-issues
 
+- Explicitly declares no link-opening handlers; it remains a Home dashboard,
+  not an `Open Link` destination.
 - Fetches issues assigned to the current user via the Jira REST API
   (`jql=assignee=currentUser()`) using credentials from the `jira` storage
   namespace (`jira/base`, `jira/email`, `jira/token`).

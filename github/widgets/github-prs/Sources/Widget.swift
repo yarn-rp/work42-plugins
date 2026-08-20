@@ -162,6 +162,9 @@ final class GitHubPRsWidget: Work42Widget {
     /// Home-only: enumeration depends on workspace root being the shell's cwd.
     var enabledLayouts: Set<WidgetLayout> { [.home] }
 
+    /// This dashboard starts review sessions but is not a link destination.
+    let linkIntents: [WidgetLinkIntentSpec] = []
+
     // MARK: - Observed state (drives the view)
 
     var loadState: GitHubPRsLoadState = .loading

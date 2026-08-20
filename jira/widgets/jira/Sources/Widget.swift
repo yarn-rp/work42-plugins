@@ -99,6 +99,22 @@ final class JiraWidget: Work42Widget {
     /// dashboard (the `jira-my-issues` board is the Home-facing widget). AC14.
     var enabledLayouts: Set<WidgetLayout> { Set(WidgetLayout.allCases).subtracting([.home]) }
 
+    /// Jira Cloud pages are rendered by this widget. Receiving a URL only
+    /// changes the in-memory BrowserSurface destination; assignment remains an
+    /// explicit storage-writing action.
+    var linkIntents: [WidgetLinkIntentSpec] {
+        [
+            WidgetLinkIntentSpec(
+                matchers: [
+                    .regex(JiraWidgetLinkSupport.cloudURLPattern),
+                ],
+                perform: { [weak self] url in
+                    self?.openLink(url)
+                }
+            ),
+        ]
+    }
+
     // MARK: - Observed state
 
     /// The Jira issue URL loaded from storage. nil = empty state (paste-URL form).
@@ -134,6 +150,17 @@ final class JiraWidget: Work42Widget {
 
     func makeView(services: SessionServices) -> AnyView {
         AnyView(JiraWidgetMainView(widget: self, services: services))
+    }
+
+    /// Navigate to a Jira URL without assigning it to the task. Open Link is a
+    /// viewing action; `assign(urlString:)` remains the explicit persistence
+    /// path used by the empty-state form.
+    func openLink(_ url: URL) {
+        jiraURL = url
+        if let model = BrowserSurface.model(forKey: id) {
+            model.urlDraft = url.absoluteString
+            model.navigateToDraft()
+        }
     }
 
     // MARK: - Load from storage

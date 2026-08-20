@@ -723,12 +723,32 @@ final class GitHubPRWidget: Work42Widget {
     /// dashboard (the `github-prs` board is the Home-facing widget). AC14.
     var enabledLayouts: Set<WidgetLayout> { Set(WidgetLayout.allCases).subtracting([.home]) }
 
+    /// GitHub web pages, including repositories, pull requests, and their
+    /// sub-routes, are rendered by this widget. The handler is intentionally
+    /// navigation-only; attaching a PR remains an explicit action.
+    var linkIntents: [WidgetLinkIntentSpec] {
+        [
+            WidgetLinkIntentSpec(
+                matchers: [
+                    .regex(GitHubWidgetLinkSupport.webURLPattern),
+                ],
+                perform: { [weak self] url in
+                    self?.openLink(url)
+                }
+            ),
+        ]
+    }
+
     // MARK: - Observed state (drives the view)
 
     /// Current PR list from `github/prs`. Updated by loadAndSyncPRs on activate
     /// and by attach/detach. The background agent also updates storage, but the
     /// view refreshes on re-activate (documented UX gap — no view-path poll per AC10).
     var prs: [PREntry] = []
+    /// Link opened through the host's Open Link intent. This is deliberately
+    /// view-only: it participates in the BrowserSurface tabs without being
+    /// appended to `github/prs` or observed by the background PR watcher.
+    var openedLinkURL: URL?
     /// Drives the attach-sheet presentation.
     var showingAttachForm: Bool = false
 
@@ -783,6 +803,7 @@ final class GitHubPRWidget: Work42Widget {
         selectionRect = .zero
         selectionFilePath = nil
         showingSelectionPopover = false
+        openedLinkURL = nil
         BrowserSurfaceCache.shared.teardown(key: id)
     }
 
@@ -814,13 +835,30 @@ final class GitHubPRWidget: Work42Widget {
     /// Sync the BrowserSurface model's tab list from the current `prs` array.
     func syncTabs() {
         guard let model = BrowserSurface.model(forKey: id) else { return }
-        let tabs: [BrowserTab] = prs.compactMap { entry -> BrowserTab? in
-            guard let url = URL(string: entry.url) else { return nil }
-            let ref = parseGitHubPRRef(entry.url)
-            let label = ref?.displayName ?? entry.url
-            return BrowserTab(id: stableTabID(for: entry.url), url: url, title: label, icon: "arrow.triangle.pull")
+        let tabs: [BrowserTab] = displayedURLs.map { url in
+            let urlString = url.absoluteString
+            let ref = parseGitHubPRRef(urlString)
+            let label = ref?.displayName ?? urlString
+            return BrowserTab(id: stableTabID(for: urlString), url: url, title: label, icon: "arrow.triangle.pull")
         }
         model.replaceTabs(tabs)
+    }
+
+    /// Stored PR URLs followed by the transient Open Link destination, if it
+    /// is not already attached. Keeping this composition in memory prevents a
+    /// simple link click from acquiring task metadata semantics.
+    var displayedURLs: [URL] {
+        GitHubWidgetLinkSupport.displayedURLs(
+            attached: prs.compactMap { URL(string: $0.url) },
+            opened: openedLinkURL
+        )
+    }
+
+    /// Navigate to a GitHub PR without attaching it to the task.
+    func openLink(_ url: URL) {
+        openedLinkURL = url
+        syncTabs()
+        browserModel?.selectTab(stableTabID(for: url.absoluteString))
     }
 
     func stableTabID(for url: String) -> UUID {
@@ -855,6 +893,12 @@ final class GitHubPRWidget: Work42Widget {
 
     func detach(tabID: UUID) async {
         guard let urlString = urlForTabID(tabID) else { return }
+        if !prs.contains(where: { $0.url == urlString }) {
+            if openedLinkURL?.absoluteString == urlString { openedLinkURL = nil }
+            tabIDs.removeValue(forKey: urlString)
+            syncTabs()
+            return
+        }
         let updated = prs.filter { $0.url != urlString }
         tabIDs.removeValue(forKey: urlString)
         // Note: lastSeen and seededFingerprints live on the background agent.
@@ -909,15 +953,15 @@ extension GitHubPRWidget: Work42WidgetBackground {
 
 // MARK: - PRWidgetMainView
 
-/// Root view dispatched from `makeView`. Reads `widget.prs` (observable) and
-/// renders either the empty-state form or the BrowserSurface multi-tab view.
+/// Root view dispatched from `makeView`. Renders the BrowserSurface for stored
+/// PRs or a transient Open Link destination; otherwise renders the empty state.
 @MainActor
 private struct PRWidgetMainView: View {
     let widget: GitHubPRWidget
     let services: SessionServices
 
     var body: some View {
-        if widget.prs.isEmpty {
+        if widget.displayedURLs.isEmpty {
             PREmptyStateView(widget: widget, services: services)
         } else {
             PRBrowserView(widget: widget, services: services)
@@ -946,8 +990,7 @@ private struct PRBrowserView: View {
     }
 
     private var firstURL: URL {
-        widget.prs.first.flatMap { URL(string: $0.url) }
-            ?? URL(string: "https://github.com")!
+        widget.displayedURLs.first ?? URL(string: "https://github.com")!
     }
 
     var body: some View {
@@ -982,7 +1025,7 @@ private struct PRBrowserView: View {
             }
         )
         // Re-sync tabs when prs changes (out-of-band attach/detach or storage update).
-        .onChange(of: widget.prs.map(\.url)) { _, _ in
+        .onChange(of: widget.displayedURLs.map(\.absoluteString)) { _, _ in
             widget.syncTabs()
         }
         .sheet(isPresented: Binding(
