@@ -1,3 +1,4 @@
 *.dylib
 widget.yaml
 .DS_Store
+.build/

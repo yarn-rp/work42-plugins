@@ -71,6 +71,9 @@ final class JiraBoardWidget: Work42Widget {
     /// belongs on Home, not inside a session. AC14.
     var enabledLayouts: Set<WidgetLayout> { [.home] }
 
+    /// This dashboard starts task sessions but is not a link destination.
+    let linkIntents: [WidgetLinkIntentSpec] = []
+
     // MARK: - Observed state
 
     /// The board URL loaded from storage. nil = empty state (paste-URL form).
