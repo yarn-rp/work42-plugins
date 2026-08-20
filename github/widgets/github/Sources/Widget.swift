@@ -723,14 +723,14 @@ final class GitHubPRWidget: Work42Widget {
     /// dashboard (the `github-prs` board is the Home-facing widget). AC14.
     var enabledLayouts: Set<WidgetLayout> { Set(WidgetLayout.allCases).subtracting([.home]) }
 
-    /// GitHub PR pages and their sub-routes (files, commits, checks, anchors)
-    /// are rendered by this widget. The handler is intentionally navigation-
-    /// only; attaching a PR remains an explicit action.
+    /// GitHub web pages, including repositories, pull requests, and their
+    /// sub-routes, are rendered by this widget. The handler is intentionally
+    /// navigation-only; attaching a PR remains an explicit action.
     var linkIntents: [WidgetLinkIntentSpec] {
         [
             WidgetLinkIntentSpec(
                 matchers: [
-                    .regex(GitHubWidgetLinkSupport.pullRequestPattern),
+                    .regex(GitHubWidgetLinkSupport.webURLPattern),
                 ],
                 perform: { [weak self] url in
                     self?.openLink(url)

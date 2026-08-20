@@ -15,15 +15,23 @@ struct PluginLinkSupportTests {
         try String(contentsOf: repositoryRoot.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
-    @Test("GitHub claims pull requests and preserves route fragments")
+    @Test("GitHub claims its web origin and preserves routes and fragments")
     func githubMatcher() throws {
-        let regex = try Regex(GitHubWidgetLinkSupport.pullRequestPattern)
+        let regex = try Regex(GitHubWidgetLinkSupport.webURLPattern)
 
+        #expect("https://github.com/yarn-rp/work42".wholeMatch(of: regex) != nil)
         #expect("https://github.com/yarn-rp/work42/pull/42#discussion_r99".wholeMatch(of: regex) != nil)
         #expect("https://github.com/yarn-rp/work42/pull/42/files?diff=split#L20".wholeMatch(of: regex) != nil)
+        #expect("https://github.com/yarn-rp/work42/issues/42".wholeMatch(of: regex) != nil)
+        #expect("https://github.com/settings/profile".wholeMatch(of: regex) != nil)
+        #expect("https://github.com?return_to=%2Fyarn-rp%2Fwork42".wholeMatch(of: regex) != nil)
+        #expect("https://github.com#readme".wholeMatch(of: regex) != nil)
+        #expect("http://github.com/yarn-rp/work42".wholeMatch(of: regex) != nil)
         #expect("HTTPS://GITHUB.COM/YARN-RP/WORK42/PULL/42".wholeMatch(of: regex) != nil)
-        #expect("https://github.com/yarn-rp/work42/issues/42".wholeMatch(of: regex) == nil)
+        #expect("https://github.com.evil.example/yarn-rp/work42".wholeMatch(of: regex) == nil)
+        #expect("https://notgithub.com/yarn-rp/work42".wholeMatch(of: regex) == nil)
         #expect("https://example.com/yarn-rp/work42/pull/42".wholeMatch(of: regex) == nil)
+        #expect("git@github.com:yarn-rp/work42.git".wholeMatch(of: regex) == nil)
     }
 
     @Test("Jira claims Atlassian Cloud URLs and preserves fragments")
@@ -60,7 +68,7 @@ struct PluginLinkSupportTests {
         let jiraHome = try source("jira/widgets/jira-my-issues/Sources/Widget.swift")
 
         #expect(github.contains("var linkIntents: [WidgetLinkIntentSpec]"))
-        #expect(github.contains("GitHubWidgetLinkSupport.pullRequestPattern"))
+        #expect(github.contains("GitHubWidgetLinkSupport.webURLPattern"))
         #expect(jira.contains("var linkIntents: [WidgetLinkIntentSpec]"))
         #expect(jira.contains("JiraWidgetLinkSupport.cloudURLPattern"))
         #expect(githubHome.contains("let linkIntents: [WidgetLinkIntentSpec] = []"))

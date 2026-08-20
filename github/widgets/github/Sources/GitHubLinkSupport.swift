@@ -1,8 +1,8 @@
 import Foundation
 
 enum GitHubWidgetLinkSupport {
-    static let pullRequestPattern =
-        #"(?i)^https?://github\.com/[^/?#]+/[^/?#]+/pull/[0-9]+(?:[/?#].*)?$"#
+    static let webURLPattern =
+        #"(?i)^https?://github\.com(?:[/?#].*)?$"#
 
     /// Compose task-attached PRs with one transient Open Link destination.
     /// The input array is never mutated and an already-attached URL is not

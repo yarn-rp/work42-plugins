@@ -32,9 +32,10 @@ hand-edit or commit them.
 - Reads/writes `github/prs` (JSON array of `{url, status, merged_at}`) via
   `services.storage`.
 - One `BrowserSurface` tab per attached PR; supports attach/detach in-widget.
-- Declares GitHub pull-request URLs to Work42's `Open Link` intent. A clicked
-  link opens as a transient browser tab without attaching the PR or changing
-  `github/prs`; URL routes, queries, and fragments are preserved.
+- Declares HTTP(S) `github.com` URLs to Work42's `Open Link` intent, including
+  repositories and pull requests. A clicked link opens as a transient browser
+  tab without attaching a PR or changing `github/prs`; URL routes, queries,
+  and fragments are preserved.
 - Background poll loop (60 s) delivers PR activity as fingerprinted
   `[system event]`s via `task42 event` / `patrol42 event`.
 - Text-selection bubble for attaching quoted PR content to the chat composer,
