@@ -132,10 +132,8 @@ for d in $(ls -d */); do
 done
 ```
 
-To trigger a code-review session from an agent after resolving the workspace
-repository key and branch:
-
-```bash
-task42 palette execute session.open.codeReview \
-  --params '{"kind":"codeReview","codeReview":{"branchesByRepository":{"<repo-key>":"origin/<branch>"}}}'
-```
+Starting a code-review session is **not** an agent CLI call — there is no
+`task42 palette` command. The `session.open.codeReview` intent is fired by
+this widget itself through `services.intents.execute` when the user picks a
+repo/branch in the Home tile. An agent's role is only to enumerate the repos
+(above); the widget owns triggering the review.
