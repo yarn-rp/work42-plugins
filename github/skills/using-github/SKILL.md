@@ -184,9 +184,11 @@ of `gh` availability.
 work42 plugin install /path/to/work42-plugins/github
 ```
 
-The plugin installs the `github` and `github-prs` widgets, symlinks the widget
-and plugin skills into `~/.claude/skills/`, and registers the GitHub Review tab
-template so it appears in the ⌘⇧T picker.
+The plugin installs into `~/.work42/plugins/github/` (its widgets +
+skills); sessions pick up its widgets and skills automatically — they
+self-compose from the installed plugins, so there is no symlink into
+`~/.claude/skills/` (that legacy global-install model was retired). It also
+registers the GitHub Review tab template so it appears in the ⌘⇧T picker.
 
 The `jira` and `github` plugins are also bundled inside the Work42 app and
 auto-installed on first launch via `PrebuiltPluginMaterializer` — you only need

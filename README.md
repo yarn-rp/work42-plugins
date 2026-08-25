@@ -121,11 +121,14 @@ The installer:
 1. Copies (or clones) the plugin folder into `~/.work42/plugins/<name>/`.
 2. Materializes each widget into `~/.work42/widgets/<slug>/` (copy prebuilt dylib
    if present and ABI-matching, otherwise `work42 widget build <slug>`).
-3. Symlinks widget skills into `~/.claude/skills/widget-<slug>/`.
-4. Symlinks plugin skills into `~/.claude/skills/<plugin>-<name>/`.
-5. Writes `plugin.lock.json` recording the resolved slugs.
-6. Tab templates are registered on the next app launch (or immediately if the
+3. Writes `plugin.lock.json` recording the resolved slugs.
+4. Tab templates are registered on the next app launch (or immediately if the
    app is running and watching `~/.work42/plugins/`).
+
+Sessions pick up the plugin's widgets and skills **automatically** — each
+session self-composes from `~/.work42/plugins/<name>/` and
+`~/.work42/widgets/<slug>/`. There is no symlink into `~/.claude/skills/`; that
+legacy global-install model was retired (`LegacyGlobalCleanup`).
 
 ### Managing plugins
 

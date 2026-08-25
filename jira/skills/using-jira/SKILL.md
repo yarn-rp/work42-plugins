@@ -162,9 +162,11 @@ the Home surface. Open it from the ⌘⇧T picker once the plugin is installed.
 work42 plugin install /path/to/work42-plugins/jira
 ```
 
-The plugin installs the `jira` and `jira-my-issues` widgets, symlinks the
-widget and plugin skills into `~/.claude/skills/`, and registers the Jira Work
-tab template so it appears in the ⌘⇧T picker.
+The plugin installs into `~/.work42/plugins/jira/` (its widgets + skills);
+sessions pick up its widgets and skills automatically — they self-compose
+from the installed plugins, so there is no symlink into `~/.claude/skills/`
+(that legacy global-install model was retired). It also registers the Jira
+Work tab template so it appears in the ⌘⇧T picker.
 
 The `jira` and `github` plugins are also bundled inside the Work42 app and
 auto-installed on first launch via `PrebuiltPluginMaterializer` — you only need
