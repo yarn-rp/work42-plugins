@@ -237,19 +237,91 @@ final class JiraWidget: Work42Widget {
     }
 }
 
-// MARK: - Session header labels (Work42WidgetHeaderLabels)
+// MARK: - Background agent (Work42WidgetBackground)
 
-/// Contributes the linked issue's key (e.g. "PROJ-123") to the session
-/// header's metadata strip, accent-tinted and clickable through to the
-/// issue. Vendor knowledge stays in the widget — the host renders the chip
-/// without knowing what a Jira key is.
-extension JiraWidget: Work42WidgetHeaderLabels {
-    var headerLabels: [WidgetHeaderLabel] {
-        guard let key = jiraKey, !key.isEmpty else { return [] }
-        return [WidgetHeaderLabel(
+/// Publishes the linked issue's key chip (e.g. "PROJ-123") to the session
+/// header while the session is alive — regardless of whether the widget's tab
+/// is shown — mirroring the GitHub PR widget's agent-based labels. The Jira
+/// widget has no headless data source (it renders a Jira page via a cookie-auth
+/// BrowserSurface), so the "background process" is simply re-reading the linked
+/// issue from storage and republishing the chip; it never fetches Jira state.
+///
+/// This REPLACES the previous `Work42WidgetHeaderLabels` singleton conformance:
+/// singleton labels resolve only through the widget instance, whereas an agent's
+/// `headerLabels` are session-scoped and surface via `WidgetBackgroundHost`
+/// whenever the widget is available to the session (not only when placed in a
+/// tab).
+@Observable
+@MainActor
+final class JiraBackgroundAgent: WidgetBackgroundAgent {
+
+    /// Session-scoped header chips. @Observable-backed so an update re-renders
+    /// only the header strip.
+    var headerLabels: [WidgetHeaderLabel] = []
+
+    /// The running refresh loop. nil when stopped.
+    private var watchTask: Task<Void, Never>?
+
+    func start(services: WidgetBackgroundServices) {
+        watchTask?.cancel()
+        watchTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                await self?.refresh(services: services)
+                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60 seconds
+            }
+        }
+    }
+
+    func stop() {
+        watchTask?.cancel()
+        watchTask = nil
+        headerLabels = []
+    }
+
+    /// Re-read the linked issue from the widget's own `jira` storage namespace
+    /// and publish the issue-key chip. Read-only; fails quietly (keeps the last
+    /// labels) when storage is unavailable, and clears when no issue is linked.
+    private func refresh(services: WidgetBackgroundServices) async {
+        let urlValue: WidgetJSONValue?
+        let keyValue: WidgetJSONValue?
+        do {
+            urlValue = try await services.storage.get(namespace: "jira", key: "url")
+            keyValue = try await services.storage.get(namespace: "jira", key: "key")
+        } catch {
+            return // storage unavailable — keep the last labels
+        }
+
+        guard case let .string(urlStr)? = urlValue, !urlStr.isEmpty else {
+            headerLabels = []
+            return
+        }
+
+        // Prefer the stored key; fall back to parsing it from the URL.
+        let resolvedKey: String?
+        if case let .string(storedKey)? = keyValue, !storedKey.isEmpty {
+            resolvedKey = storedKey
+        } else {
+            resolvedKey = parseJiraKey(from: urlStr)
+        }
+        guard let key = resolvedKey, !key.isEmpty else {
+            headerLabels = []
+            return
+        }
+
+        headerLabels = [WidgetHeaderLabel(
             text: key, systemIcon: "ticket",
-            tint: .accent, url: jiraURL
+            tint: .accent, url: URL(string: urlStr)
         )]
+    }
+}
+
+/// The host detects this conformance via `as? any Work42WidgetBackground` and
+/// starts one agent per (session × widget) whenever the widget is available to
+/// the session. Vendor knowledge (what a Jira key is) stays in the widget.
+extension JiraWidget: Work42WidgetBackground {
+    func makeBackgroundAgent() -> any WidgetBackgroundAgent {
+        // Fresh instance per call — per-session isolation.
+        JiraBackgroundAgent()
     }
 }
 
