@@ -1,30 +1,23 @@
 // Widget.swift — jira pre-built widget (feat/generalizations-of-features.6).
 //
-// Renders the Jira issue linked to the current task through a BrowserSurface.
-// Two states, driven by whether the task has a Jira URL in storage:
+// Renders the Jira issue(s) linked to the current session through a
+// BrowserSurface with ONE TAB PER ISSUE — mirroring the GitHub PR widget's
+// multiple-PR support. Two states, driven by whether any issue is stored:
 //
-//   EMPTY state   — paste-URL form. On submit, writes jira/url and jira/key
-//                   into this widget's own storage namespace via services.storage
-//                   (widget id "jira" == storage namespace "jira", so set(key:)
-//                   writes to jira/<key> directly — no shell workaround needed).
+//   EMPTY state    — paste-URL form. On submit, appends the issue to jira/issues.
 //
-//   ASSIGNED state — BrowserSurface with:
+//   ASSIGNED state — BrowserSurface with one tab per attached issue:
 //                      selector:     "" (full page — an isolation selector
 //                                     blanks the whole page when the user
-//                                     isn't signed in yet, since nothing
-//                                     matches; same bug class fixed on the
-//                                     github widget's auth-gated selector)
+//                                     isn't signed in yet, since nothing matches)
 //                      dataStoreKey: "browser" (cookies shared with the Browser widget)
-//                      cacheKey:     id        (== "jira", enables chrome-as-header)
-//                   A "Change ticket" overlay button clears storage and returns
-//                   to the empty state.
+//                      cacheKey:     id ("jira")
+//                    The chrome's `+` opens an attach sheet; a tab's `×` detaches.
 //
-// STORAGE CONVENTION (also documented in SKILL.md):
-//   Read:  services.storage.get(namespace: "jira", key: "url")
-//   Write: services.storage.set(key: "url", value: .string(urlString))
-//          services.storage.set(key: "key", value: .string(issueKey))
-//   Clear: services.storage.delete(key: "url")
-//          services.storage.delete(key: "key")
+// STORAGE (widget id "jira" == namespace "jira"):
+//   jira/issues — JSON array of { url, key } (the source of truth).
+//   Legacy jira/url + jira/key (single-issue) are migrated into a one-element
+//   jira/issues list on first load, then deleted.
 //
 // Jira key parsing (reimplemented here from the deleted Task42Core.JiraTicket):
 //   Regex-free: split the URL path on "/" and look for a component matching
@@ -72,10 +65,54 @@ private func looksLikeJiraKey(_ s: String) -> Bool {
     return true
 }
 
-// MARK: - PATH enrichment
+// MARK: - JiraEntry
 
-/// Prepend common Homebrew / local dirs to PATH for the task42 shell invocations.
-private let enrichedPathPrefix = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin\""
+/// One attached Jira issue. Mirrors the GitHub widget's `PREntry` so the jira
+/// widget supports MULTIPLE issues per session with the same storage shape
+/// (`jira/issues` — a JSON array).
+struct JiraEntry: Codable, Sendable, Equatable {
+    var url: String
+    var key: String?
+
+    /// Decode `jira/issues` (`WidgetJSONValue.array`) into typed entries.
+    static func decode(from value: WidgetJSONValue) -> [JiraEntry] {
+        guard case .array(let items) = value else { return [] }
+        return items.compactMap { item -> JiraEntry? in
+            guard case .object(let obj) = item,
+                  case .string(let url) = obj["url"] else { return nil }
+            let key: String?
+            if case .string(let k) = obj["key"] { key = k } else { key = nil }
+            return JiraEntry(url: url, key: key)
+        }
+    }
+
+    /// Encode `[JiraEntry]` → `WidgetJSONValue.array`.
+    static func encode(_ entries: [JiraEntry]) -> WidgetJSONValue {
+        .array(entries.map { e in
+            .object(["url": .string(e.url), "key": e.key.map { .string($0) } ?? .null])
+        })
+    }
+
+    /// The stored issues, with a legacy single `jira/url` (+ `jira/key`) migrated
+    /// into a one-element list when `jira/issues` is absent/empty — so a widget
+    /// linked before multi-issue support keeps its issue.
+    static func resolve(
+        issues: WidgetJSONValue?,
+        legacyURL: WidgetJSONValue?,
+        legacyKey: WidgetJSONValue?
+    ) -> [JiraEntry] {
+        if let issues {
+            let decoded = decode(from: issues)
+            if !decoded.isEmpty { return decoded }
+        }
+        if case let .string(url)? = legacyURL, !url.isEmpty {
+            let key: String?
+            if case let .string(k)? = legacyKey, !k.isEmpty { key = k } else { key = parseJiraKey(from: url) }
+            return [JiraEntry(url: url, key: key)]
+        }
+        return []
+    }
+}
 
 // MARK: - JiraWidget
 
@@ -83,8 +120,7 @@ private let enrichedPathPrefix = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/loc
 ///
 /// Widget id:  `jira`
 /// Storage ns: reads and writes namespace `jira` (own namespace, since id == "jira").
-///   jira/url  — full Jira issue URL
-///   jira/key  — parsed issue key (e.g. "PROJ-123")
+///   jira/issues — JSON array of { url, key } (multiple issues, one tab each).
 @Observable
 @MainActor
 final class JiraWidget: Work42Widget {
@@ -95,12 +131,12 @@ final class JiraWidget: Work42Widget {
     let title = "Jira"
     let icon = "ticket"
 
-    /// Session surfaces only — a single issue belongs to a session, not the Home
-    /// dashboard (the `jira-my-issues` board is the Home-facing widget). AC14.
+    /// Session surfaces only — issues belong to a session, not the Home dashboard
+    /// (the `jira-my-issues` board is the Home-facing widget). AC14.
     var enabledLayouts: Set<WidgetLayout> { Set(WidgetLayout.allCases).subtracting([.home]) }
 
     /// Jira Cloud pages are rendered by this widget. Receiving a URL only
-    /// changes the in-memory BrowserSurface destination; assignment remains an
+    /// changes the in-memory BrowserSurface destination; attach remains an
     /// explicit storage-writing action.
     var linkIntents: [WidgetLinkIntentSpec] {
         [
@@ -117,31 +153,37 @@ final class JiraWidget: Work42Widget {
 
     // MARK: - Observed state
 
-    /// The Jira issue URL loaded from storage. nil = empty state (paste-URL form).
-    var jiraURL: URL? = nil
-    /// The parsed issue key (jira/key storage, e.g. "PROJ-123"). Feeds the
-    /// session-header label (`Work42WidgetHeaderLabels`).
-    var jiraKey: String? = nil
+    /// The attached Jira issues (jira/issues storage). Empty = paste-URL form.
+    var issues: [JiraEntry] = []
+    /// A transient Open-Link destination, shown as a tab but not persisted as an
+    /// attached issue (a link click is a viewing action, not attach).
+    var openedLinkURL: URL? = nil
+    /// Drives the attach-sheet presentation (the `+` in the browser chrome).
+    var showingAttachForm: Bool = false
     /// Non-nil while storage is being read on first activate.
     var isLoading: Bool = false
 
-    // MARK: - Internal
+    // MARK: - Internal (not observed)
 
     private var services: SessionServices?
+    /// The `BrowserWidgetModel` stored from the `configure:` closure — for tab sync.
+    var browserModel: BrowserWidgetModel?
+    /// Stable UUID → URL mapping so tab close → detach works.
+    private var tabIDs: [String: UUID] = [:]
 
     // MARK: - Lifecycle
 
     func activate(services: SessionServices) {
         self.services = services
         Task { @MainActor [weak self] in
-            await self?.loadStoredURL()
+            await self?.loadAndSyncIssues()
         }
     }
 
     func deactivate() {
         services = nil
-        jiraURL = nil
-        jiraKey = nil
+        browserModel = nil
+        openedLinkURL = nil
         isLoading = false
         BrowserSurfaceCache.shared.teardown(key: id)
     }
@@ -152,105 +194,145 @@ final class JiraWidget: Work42Widget {
         AnyView(JiraWidgetMainView(widget: self, services: services))
     }
 
-    /// Navigate to a Jira URL without assigning it to the task. Open Link is a
-    /// viewing action; `assign(urlString:)` remains the explicit persistence
-    /// path used by the empty-state form.
-    func openLink(_ url: URL) {
-        jiraURL = url
-        if let model = BrowserSurface.model(forKey: id) {
-            model.urlDraft = url.absoluteString
-            model.navigateToDraft()
-        }
-    }
+    // MARK: - Load from storage (with legacy migration)
 
-    // MARK: - Load from storage
-
-    func loadStoredURL() async {
+    func loadAndSyncIssues() async {
         guard let services else { return }
         isLoading = true
         defer { isLoading = false }
         do {
-            if let value = try await services.storage.get(namespace: "jira", key: "url"),
-               case .string(let urlStr) = value,
-               !urlStr.isEmpty,
-               let url = URL(string: urlStr) {
-                jiraURL = url
-                if let keyValue = try? await services.storage.get(namespace: "jira", key: "key"),
-                   case .string(let keyStr) = keyValue, !keyStr.isEmpty {
-                    jiraKey = keyStr
-                } else {
-                    jiraKey = parseJiraKey(from: urlStr)
-                }
-            } else {
-                jiraURL = nil
-                jiraKey = nil
+            let issuesVal = try await services.storage.get(namespace: "jira", key: "issues")
+            let legacyURL = try? await services.storage.get(namespace: "jira", key: "url")
+            let legacyKey = try? await services.storage.get(namespace: "jira", key: "key")
+            let resolved = JiraEntry.resolve(issues: issuesVal, legacyURL: legacyURL ?? nil, legacyKey: legacyKey ?? nil)
+            issues = resolved
+
+            // Migrate a legacy single-issue layout into jira/issues, then drop
+            // the legacy scalars so the array is the sole source of truth.
+            let hadIssuesArray: Bool = {
+                if case .array(let a)? = issuesVal { return !a.isEmpty }
+                return false
+            }()
+            if !hadIssuesArray, !resolved.isEmpty {
+                _ = await writeIssues(resolved)
+                try? await services.storage.delete(key: "url")
+                try? await services.storage.delete(key: "key")
             }
         } catch {
             // Storage unavailable (Home surface, no task) — stay in empty state.
-            jiraURL = nil
-            jiraKey = nil
+            issues = []
         }
+        syncTabs()
     }
 
-    // MARK: - Assign (submit from empty-state form)
+    // MARK: - Tab sync
 
-    /// Validate and persist a Jira URL. Returns an error string on failure, nil on success.
-    func assign(urlString: String) async -> String? {
+    /// Sync the BrowserSurface model's tab list from `displayedURLs` — one tab
+    /// per attached issue (plus a transient opened-link tab).
+    func syncTabs() {
+        guard let model = BrowserSurface.model(forKey: id) else { return }
+        let tabs: [BrowserTab] = displayedURLs.map { url in
+            let urlString = url.absoluteString
+            let label = keyForURL(urlString) ?? (url.host ?? urlString)
+            return BrowserTab(id: stableTabID(for: urlString), url: url, title: label, icon: "ticket")
+        }
+        model.replaceTabs(tabs)
+    }
+
+    /// Attached issue URLs followed by the transient Open-Link destination, if
+    /// it is not already attached.
+    var displayedURLs: [URL] {
+        var urls = issues.compactMap { URL(string: $0.url) }
+        if let opened = openedLinkURL,
+           !issues.contains(where: { $0.url == opened.absoluteString }) {
+            urls.append(opened)
+        }
+        return urls
+    }
+
+    /// The parsed key for an attached URL (stored key first, else parse).
+    private func keyForURL(_ urlString: String) -> String? {
+        if let entry = issues.first(where: { $0.url == urlString }), let k = entry.key, !k.isEmpty {
+            return k
+        }
+        return parseJiraKey(from: urlString)
+    }
+
+    /// Navigate to a Jira issue without attaching it — shows it as a tab.
+    func openLink(_ url: URL) {
+        openedLinkURL = url
+        syncTabs()
+        browserModel?.selectTab(stableTabID(for: url.absoluteString))
+    }
+
+    func stableTabID(for url: String) -> UUID {
+        if let existing = tabIDs[url] { return existing }
+        let new = UUID()
+        tabIDs[url] = new
+        return new
+    }
+
+    func urlForTabID(_ tabID: UUID) -> String? {
+        tabIDs.first(where: { $0.value == tabID })?.key
+    }
+
+    // MARK: - Attach
+
+    /// Validate and attach a Jira issue URL. Returns an error string on failure,
+    /// nil on success (or when already attached).
+    func attach(urlString: String) async -> String? {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "URL cannot be empty." }
-        guard let url = URL(string: trimmed),
-              url.scheme == "https" || url.scheme == "http" else {
+        guard let url = URL(string: trimmed), url.scheme == "https" || url.scheme == "http" else {
             return "Not a valid URL. Expected https://your-org.atlassian.net/browse/PROJ-123."
         }
-        guard let services else { return "Widget is not active." }
+        guard !issues.contains(where: { $0.url == trimmed }) else { return nil }
 
-        let key = parseJiraKey(from: trimmed)
-
-        do {
-            try await services.storage.set(key: "url", value: .string(trimmed))
-            if let key {
-                try await services.storage.set(key: "key", value: .string(key))
-            }
-        } catch {
-            return "Failed to save Jira URL: \(error.localizedDescription)"
-        }
-
-        jiraURL = url
-        jiraKey = key
-        return nil
+        var updated = issues
+        updated.append(JiraEntry(url: trimmed, key: parseJiraKey(from: trimmed)))
+        return await writeIssues(updated)
     }
 
-    // MARK: - Clear (return to empty state)
+    // MARK: - Detach
 
-    /// Clear jira/url and jira/key from storage and return to the paste-URL form.
-    func clear() async {
-        guard let services else { return }
-        do {
-            try await services.storage.delete(key: "url")
-            try await services.storage.delete(key: "key")
-        } catch {
-            // Fail silently on clear — the UI will still reset to empty state.
+    func detach(tabID: UUID) async {
+        guard let urlString = urlForTabID(tabID) else { return }
+        // A transient opened-link tab (not attached) → just drop it.
+        if !issues.contains(where: { $0.url == urlString }) {
+            if openedLinkURL?.absoluteString == urlString { openedLinkURL = nil }
+            tabIDs.removeValue(forKey: urlString)
+            syncTabs()
+            return
         }
-        jiraURL = nil
-        jiraKey = nil
-        BrowserSurfaceCache.shared.teardown(key: id)
+        let updated = issues.filter { $0.url != urlString }
+        tabIDs.removeValue(forKey: urlString)
+        _ = await writeIssues(updated)
+    }
+
+    // MARK: - Write issues to storage
+
+    /// Persist the updated issue list to `jira/issues` and refresh `self.issues`.
+    private func writeIssues(_ updated: [JiraEntry]) async -> String? {
+        guard let services else { return "Widget not active." }
+        do {
+            try await services.storage.set(key: "issues", value: JiraEntry.encode(updated))
+        } catch {
+            return "Failed to write issue list: \(error.localizedDescription)"
+        }
+        issues = updated
+        syncTabs()
+        return nil
     }
 }
 
 // MARK: - Background agent (Work42WidgetBackground)
 
-/// Publishes the linked issue's key chip (e.g. "PROJ-123") to the session
-/// header while the session is alive — regardless of whether the widget's tab
-/// is shown — mirroring the GitHub PR widget's agent-based labels. The Jira
-/// widget has no headless data source (it renders a Jira page via a cookie-auth
-/// BrowserSurface), so the "background process" is simply re-reading the linked
-/// issue from storage and republishing the chip; it never fetches Jira state.
-///
-/// This REPLACES the previous `Work42WidgetHeaderLabels` singleton conformance:
-/// singleton labels resolve only through the widget instance, whereas an agent's
-/// `headerLabels` are session-scoped and surface via `WidgetBackgroundHost`
-/// whenever the widget is available to the session (not only when placed in a
-/// tab).
+/// Publishes the linked issue's key chip(s) to the session header while the
+/// session is alive — regardless of whether the widget's tab is shown — mirroring
+/// the GitHub PR widget's agent-based labels. The Jira widget has no headless
+/// data source (it renders a Jira page via a cookie-auth BrowserSurface), so the
+/// "background process" only re-reads the linked issues from storage and
+/// republishes the chip(s); it never fetches Jira state.
 @Observable
 @MainActor
 final class JiraBackgroundAgent: WidgetBackgroundAgent {
@@ -278,39 +360,34 @@ final class JiraBackgroundAgent: WidgetBackgroundAgent {
         headerLabels = []
     }
 
-    /// Re-read the linked issue from the widget's own `jira` storage namespace
-    /// and publish the issue-key chip. Read-only; fails quietly (keeps the last
-    /// labels) when storage is unavailable, and clears when no issue is linked.
+    /// Re-read the linked issues from the widget's own `jira` storage namespace
+    /// and publish the issue-key chip(s). Read-only; fails quietly when storage
+    /// is unavailable, and clears when no issue is linked.
     private func refresh(services: WidgetBackgroundServices) async {
-        let urlValue: WidgetJSONValue?
-        let keyValue: WidgetJSONValue?
+        let issuesVal: WidgetJSONValue?
+        let legacyURL: WidgetJSONValue?
+        let legacyKey: WidgetJSONValue?
         do {
-            urlValue = try await services.storage.get(namespace: "jira", key: "url")
-            keyValue = try await services.storage.get(namespace: "jira", key: "key")
+            issuesVal = try await services.storage.get(namespace: "jira", key: "issues")
+            legacyURL = try await services.storage.get(namespace: "jira", key: "url")
+            legacyKey = try await services.storage.get(namespace: "jira", key: "key")
         } catch {
             return // storage unavailable — keep the last labels
         }
 
-        guard case let .string(urlStr)? = urlValue, !urlStr.isEmpty else {
+        let entries = JiraEntry.resolve(issues: issuesVal, legacyURL: legacyURL, legacyKey: legacyKey)
+        guard let first = entries.first else {
             headerLabels = []
             return
         }
-
-        // Prefer the stored key; fall back to parsing it from the URL.
-        let resolvedKey: String?
-        if case let .string(storedKey)? = keyValue, !storedKey.isEmpty {
-            resolvedKey = storedKey
-        } else {
-            resolvedKey = parseJiraKey(from: urlStr)
-        }
-        guard let key = resolvedKey, !key.isEmpty else {
+        let key = first.key ?? parseJiraKey(from: first.url)
+        guard let key, !key.isEmpty else {
             headerLabels = []
             return
         }
-
         headerLabels = [WidgetHeaderLabel(
             text: key, systemIcon: "ticket",
-            tint: .accent, url: URL(string: urlStr)
+            tint: .accent, url: URL(string: first.url)
         )]
     }
 }
@@ -327,8 +404,8 @@ extension JiraWidget: Work42WidgetBackground {
 
 // MARK: - JiraWidgetMainView
 
-/// Root view dispatched from `makeView`. Shows the empty-state form when no URL
-/// is stored, or the BrowserSurface when an issue is assigned.
+/// Root view dispatched from `makeView`. Shows the empty-state form when no issue
+/// is attached, or the tabbed BrowserSurface otherwise.
 @MainActor
 private struct JiraWidgetMainView: View {
     let widget: JiraWidget
@@ -338,58 +415,71 @@ private struct JiraWidgetMainView: View {
         if widget.isLoading {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let url = widget.jiraURL {
-            JiraBrowserView(widget: widget, services: services, url: url)
-        } else {
+        } else if widget.displayedURLs.isEmpty {
             JiraEmptyStateView(widget: widget, services: services)
+        } else {
+            JiraBrowserView(widget: widget, services: services)
         }
     }
 }
 
 // MARK: - JiraBrowserView
 
-/// Renders the BrowserSurface for the assigned Jira issue, with a
-/// "Change ticket" overlay button to return to the empty state.
+/// Renders the BrowserSurface with one tab per attached Jira issue. The chrome's
+/// `+` opens an attach sheet; a tab's `×` detaches the issue.
 @MainActor
 private struct JiraBrowserView: View {
     let widget: JiraWidget
     let services: SessionServices
-    let url: URL
+
+    private var firstURL: URL {
+        widget.displayedURLs.first ?? URL(string: "https://www.atlassian.net")!
+    }
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            BrowserSurface(
-                spec: BrowserSurfaceSpec(
-                    url: url,
-                    // No isolation selector: it blanks the whole page when
-                    // the user isn't signed in yet (nothing matches), same
-                    // as the github widget's earlier auth-gated-selector bug.
-                    selector: "",
-                    // Shared cookie store with the regular Browser widget.
-                    dataStoreKey: "browser",
-                    title: "Jira",
-                    icon: "ticket"
-                ),
-                cacheKey: widget.id
-            )
-            // "Change ticket" button — clears storage and returns to the paste-URL form.
-            Button {
-                Task { await widget.clear() }
-            } label: {
-                Label("Change ticket", systemImage: "arrow.uturn.backward")
-                    .font(.system(size: 11, weight: .medium))
+        BrowserSurface(
+            spec: BrowserSurfaceSpec(
+                url: firstURL,
+                // No isolation selector: it blanks the whole page when the user
+                // isn't signed in yet (nothing matches).
+                selector: "",
+                // Shared cookie store with the regular Browser widget.
+                dataStoreKey: "browser",
+                title: "Jira",
+                icon: "ticket"
+            ),
+            cacheKey: widget.id,
+            configure: { [weak widget] model in
+                guard let widget else { return }
+                widget.browserModel = model
+                // Sync all issue tabs (replace the seeded first tab from spec).
+                widget.syncTabs()
+                // + opens the attach form.
+                model.onNewTab = { [weak widget] in
+                    widget?.showingAttachForm = true
+                }
+                // × detaches the issue.
+                model.onTabClosed = { [weak widget] tabID in
+                    Task { await widget?.detach(tabID: tabID) }
+                }
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .padding(DT.s8)
+        )
+        // Re-sync tabs when the issue list changes (out-of-band attach/detach).
+        .onChange(of: widget.displayedURLs.map(\.absoluteString)) { _, _ in
+            widget.syncTabs()
+        }
+        .sheet(isPresented: Binding(
+            get: { widget.showingAttachForm },
+            set: { widget.showingAttachForm = $0 }
+        )) {
+            JiraAttachSheet(widget: widget, services: services)
         }
     }
 }
 
 // MARK: - JiraEmptyStateView
 
-/// Shown when no Jira issue is assigned. Provides a text field + button
-/// to paste a Jira URL, which is parsed and written to storage on submit.
+/// Shown when no issue is attached. Paste a Jira URL to attach the first issue.
 @MainActor
 private struct JiraEmptyStateView: View {
     let widget: JiraWidget
@@ -408,7 +498,7 @@ private struct JiraEmptyStateView: View {
             Text("No Jira ticket")
                 .font(.system(size: DT.f13, weight: .medium))
 
-            Text("Paste a Jira issue URL to embed it here. Sign in to Jira once and the session is kept.")
+            Text("Paste a Jira issue URL to embed it here. Add more later with the + in the tab bar. Sign in to Jira once and the session is kept.")
                 .font(.system(size: DT.f11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -417,9 +507,9 @@ private struct JiraEmptyStateView: View {
             HStack(spacing: DT.s8) {
                 TextField("https://your-org.atlassian.net/browse/PROJ-123", text: $draftURL)
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit(submitAssign)
+                    .onSubmit(submitAttach)
 
-                Button("Open in Work42", action: submitAssign)
+                Button("Open in Work42", action: submitAttach)
                     .disabled(assigning || draftURL.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             .frame(maxWidth: 360)
@@ -436,17 +526,86 @@ private struct JiraEmptyStateView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func submitAssign() {
+    private func submitAttach() {
         let trimmed = draftURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !assigning else { return }
         assigning = true
         errorMessage = nil
         Task { @MainActor in
             defer { assigning = false }
-            if let err = await widget.assign(urlString: trimmed) {
+            if let err = await widget.attach(urlString: trimmed) {
                 errorMessage = err
             } else {
                 draftURL = ""
+            }
+        }
+    }
+}
+
+// MARK: - JiraAttachSheet
+
+/// Modal sheet shown when the `+` button is pressed in the chrome row.
+@MainActor
+private struct JiraAttachSheet: View {
+    let widget: JiraWidget
+    let services: SessionServices
+
+    @State private var draftURL: String = ""
+    @State private var errorMessage: String? = nil
+    @State private var attaching = false
+
+    var body: some View {
+        VStack(spacing: DT.s16) {
+            Text("Attach a Jira issue")
+                .font(.system(size: DT.f14, weight: .semibold))
+
+            Text("Paste a Jira issue URL. A new tab is added and the issue is embedded.")
+                .font(.system(size: DT.f12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+
+            HStack(spacing: DT.s8) {
+                TextField("https://your-org.atlassian.net/browse/PROJ-123", text: $draftURL)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(submitAttach)
+
+                Button("Attach", action: submitAttach)
+                    .disabled(attaching || draftURL.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .frame(maxWidth: 360)
+
+            if let msg = errorMessage {
+                Text(msg)
+                    .font(.system(size: DT.f11))
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+            }
+
+            Button("Cancel") {
+                widget.showingAttachForm = false
+                draftURL = ""
+                errorMessage = nil
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(DT.s24)
+        .frame(minWidth: 420)
+    }
+
+    private func submitAttach() {
+        let trimmed = draftURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !attaching else { return }
+        attaching = true
+        errorMessage = nil
+        Task { @MainActor in
+            defer { attaching = false }
+            if let err = await widget.attach(urlString: trimmed) {
+                errorMessage = err
+            } else {
+                draftURL = ""
+                widget.showingAttachForm = false
             }
         }
     }
