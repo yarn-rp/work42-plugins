@@ -376,19 +376,27 @@ final class JiraBackgroundAgent: WidgetBackgroundAgent {
         }
 
         let entries = JiraEntry.resolve(issues: issuesVal, legacyURL: legacyURL, legacyKey: legacyKey)
-        guard let first = entries.first else {
-            headerLabels = []
-            return
+
+        // One branded chip per attached issue: the issue key on the Jira-blue
+        // brand fill (`#0052CC`), leading a ticket glyph, linking to the issue.
+        // `groupId = the issue url` marks it as its own segmented group so a
+        // status segment can be added later (Jira exposes no live status here);
+        // with a single segment it renders as one branded pill. Multiple issues
+        // therefore surface as multiple branded chips instead of only the first.
+        var labels: [WidgetHeaderLabel] = []
+        for entry in entries {
+            let key = entry.key ?? parseJiraKey(from: entry.url)
+            let text = (key?.isEmpty == false) ? key! : (URL(string: entry.url)?.host ?? entry.url)
+            labels.append(WidgetHeaderLabel(
+                text: text,
+                systemIcon: "ticket",
+                brandColorHex: "#0052CC",   // Jira blue
+                tint: .neutral,
+                url: URL(string: entry.url),
+                groupId: entry.url
+            ))
         }
-        let key = first.key ?? parseJiraKey(from: first.url)
-        guard let key, !key.isEmpty else {
-            headerLabels = []
-            return
-        }
-        headerLabels = [WidgetHeaderLabel(
-            text: key, systemIcon: "ticket",
-            tint: .accent, url: URL(string: first.url)
-        )]
+        headerLabels = labels
     }
 }
 
