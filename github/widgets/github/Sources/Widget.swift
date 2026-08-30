@@ -451,6 +451,14 @@ private let enrichedPathPrefix = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/loc
 /// The singleton's `headerStates` dict lived on the widget class (shared across
 /// all sessions) — a cross-session contamination source. Each agent owns its own
 /// `headerStates`, so labels are correctly session-scoped (AC3).
+/// The GitHub mark (Octocat) as a small embedded PNG, base64-encoded — same
+/// asset the github-prs widget uses — so the per-PR id chip leads with the real
+/// brand mark on the `#1F2328` brand fill. Self-contained (no network).
+private let githubMarkPNGBase64 = "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"
+
+/// Decoded once at file scope; nil only if the base64 is corrupt.
+private let githubMarkPNG: Data? = Data(base64Encoded: githubMarkPNGBase64)
+
 @Observable
 @MainActor
 final class GitHubBackgroundAgent: WidgetBackgroundAgent {
@@ -614,54 +622,64 @@ final class GitHubBackgroundAgent: WidgetBackgroundAgent {
     }
 
     /// Recompute `headerLabels` from `headerStates`. Called at the end of each
-    /// successful poll cycle. Labels the FIRST PR only (patrol sessions have one
-    /// primary PR; labeling a full multi-PR set would spam the strip).
+    /// successful poll cycle. Emits ONE segmented group per attached PR (in the
+    /// stored order), sharing `groupId = the PR url` so the host renders each PR
+    /// as a single branded pill: a GitHub-marked id segment (`owner/repo#N`,
+    /// `#1F2328` fill) that opens the PR, followed by its CI and review status
+    /// segments (semantic tints) that deep-link to the checks / PR. Every PR
+    /// gets at least its id segment, so none is lost.
     private func updateHeaderLabels(prs: [PREntry]) {
-        guard let entry = prs.first, let st = headerStates[entry.url] else {
-            headerLabels = []
-            return
-        }
         var labels: [WidgetHeaderLabel] = []
 
-        if !st.author.isEmpty {
-            labels.append(WidgetHeaderLabel(
-                text: "@\(st.author)", systemIcon: "person.crop.circle",
-                iconURL: URL(string: "https://github.com/\(st.author).png?size=40"),
-                tint: .neutral, url: URL(string: "https://github.com/\(st.author)")
-            ))
-        }
+        for entry in prs {
+            guard let st = headerStates[entry.url] else { continue }
+            let gid = entry.url
+            let idText = parseGitHubPRRef(entry.url)?.displayName ?? entry.url
 
-        if st.checksTotal > 0 {
-            let checksURL = URL(string: "\(entry.url)/checks")
-            if st.checksFailed > 0 {
+            // ID segment — brand mark + owner/repo#N on the GitHub brand fill.
+            labels.append(WidgetHeaderLabel(
+                text: idText,
+                iconImageData: githubMarkPNG,
+                brandColorHex: "#1F2328",
+                tint: .neutral,
+                url: URL(string: entry.url),
+                groupId: gid
+            ))
+
+            // CI status segment.
+            if st.checksTotal > 0 {
+                let checksURL = URL(string: "\(entry.url)/checks")
+                if st.checksFailed > 0 {
+                    labels.append(WidgetHeaderLabel(
+                        text: st.checksFailed == 1 ? "CI: 1 failing" : "CI: \(st.checksFailed) failing",
+                        systemIcon: "xmark.circle.fill", tint: .failure, url: checksURL, groupId: gid
+                    ))
+                } else if st.checksPending > 0 {
+                    labels.append(WidgetHeaderLabel(
+                        text: "CI running", systemIcon: "clock.fill",
+                        tint: .warning, url: checksURL, groupId: gid
+                    ))
+                } else {
+                    labels.append(WidgetHeaderLabel(
+                        text: "CI passing", systemIcon: "checkmark.circle.fill",
+                        tint: .success, url: checksURL, groupId: gid
+                    ))
+                }
+            }
+
+            // Review status segment.
+            if st.changesRequested {
                 labels.append(WidgetHeaderLabel(
-                    text: st.checksFailed == 1 ? "CI: 1 failing" : "CI: \(st.checksFailed) failing",
-                    systemIcon: "xmark.circle.fill", tint: .failure, url: checksURL
+                    text: "Changes requested", systemIcon: "exclamationmark.bubble.fill",
+                    tint: .warning, url: URL(string: entry.url), groupId: gid
                 ))
-            } else if st.checksPending > 0 {
+            } else if st.approvals > 0 {
                 labels.append(WidgetHeaderLabel(
-                    text: "CI running", systemIcon: "clock.fill",
-                    tint: .warning, url: checksURL
-                ))
-            } else {
-                labels.append(WidgetHeaderLabel(
-                    text: "CI passing", systemIcon: "checkmark.circle.fill",
-                    tint: .success, url: checksURL
+                    text: st.approvals == 1 ? "1 approval" : "\(st.approvals) approvals",
+                    systemIcon: "checkmark.seal.fill", tint: .success,
+                    url: URL(string: entry.url), groupId: gid
                 ))
             }
-        }
-
-        if st.changesRequested {
-            labels.append(WidgetHeaderLabel(
-                text: "Changes requested", systemIcon: "exclamationmark.bubble.fill",
-                tint: .warning, url: URL(string: entry.url)
-            ))
-        } else if st.approvals > 0 {
-            labels.append(WidgetHeaderLabel(
-                text: st.approvals == 1 ? "1 approval" : "\(st.approvals) approvals",
-                systemIcon: "checkmark.seal.fill", tint: .success,
-                url: URL(string: entry.url)
-            ))
         }
 
         headerLabels = labels
