@@ -18,8 +18,9 @@
 //                                   regular Browser widget — sign in once)
 //                     title:        "Jira"
 //                     cacheKey:     id ("jira-my-issues")
-//                   A "Change board" overlay button clears storage and returns
-//                   to the empty state. The configure: closure stashes the
+//                   An "Edit board" overlay opens a pre-filled editor. Saving
+//                   replaces the stored URL in place; removing it is a separate
+//                   destructive action. The configure: closure stashes the
 //                   BrowserWidgetModel so the action-area intent can read the
 //                   current URL.
 //
@@ -86,6 +87,9 @@ final class JiraBoardWidget: Work42Widget {
     /// True while storage is being read on first activate (prevents flashing
     /// the empty-state form before the stored URL loads).
     var isLoading: Bool = false
+
+    /// Drives the edit sheet for an already-pinned board.
+    var showingBoardEditor: Bool = false
 
     // MARK: - Internal
 
@@ -172,6 +176,7 @@ final class JiraBoardWidget: Work42Widget {
         services = nil
         boardURL = nil
         browserModel = nil
+        showingBoardEditor = false
         isLoading = false
         BrowserSurfaceCache.shared.teardown(key: id)
     }
@@ -223,6 +228,10 @@ final class JiraBoardWidget: Work42Widget {
             return "Failed to save board URL: \(error.localizedDescription)"
         }
 
+        if boardURL != url {
+            browserModel = nil
+            BrowserSurfaceCache.shared.teardown(key: id)
+        }
         boardURL = url
         return nil
     }
@@ -263,8 +272,8 @@ private struct JiraBoardWidgetMainView: View {
 
 // MARK: - JiraBoardBrowserView
 
-/// Renders the BrowserSurface for the pinned Jira board URL, with a
-/// "Change board" overlay button to return to the paste-URL form.
+/// Renders the BrowserSurface for the pinned Jira board URL, with an
+/// "Edit board" overlay that opens a pre-filled editor.
 /// The configure: closure stashes the BrowserWidgetModel on the widget
 /// so the "Start Task Session" intent can read the current page URL.
 @MainActor
@@ -296,18 +305,102 @@ private struct JiraBoardBrowserView: View {
                 }
             )
 
-            // "Change board" button — clears the stored URL and returns to the
-            // paste-URL form. Stays bottom-trailing so it doesn't obscure the
-            // board content.
+            // Editing no longer clears first: the current URL is seeded into a
+            // sheet and replaced only after validation succeeds.
             Button {
-                Task { await widget.clearBoardURL() }
+                widget.showingBoardEditor = true
             } label: {
-                Label("Change board", systemImage: "arrow.uturn.backward")
+                Label("Edit board", systemImage: "pencil")
                     .font(.system(size: 11, weight: .medium))
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
             .padding(DT.s8)
+        }
+        .sheet(isPresented: Binding(
+            get: { widget.showingBoardEditor },
+            set: { widget.showingBoardEditor = $0 }
+        )) {
+            JiraBoardEditSheet(widget: widget, currentURL: url)
+        }
+    }
+}
+
+// MARK: - JiraBoardEditSheet
+
+/// Edits an existing board without clearing the stored value first. The prior
+/// URL remains active when validation or persistence fails.
+@MainActor
+private struct JiraBoardEditSheet: View {
+    let widget: JiraBoardWidget
+
+    @State private var draftURL: String
+    @State private var errorMessage: String? = nil
+    @State private var saving = false
+
+    init(widget: JiraBoardWidget, currentURL: URL) {
+        self.widget = widget
+        _draftURL = State(initialValue: currentURL.absoluteString)
+    }
+
+    var body: some View {
+        VStack(spacing: DT.s16) {
+            JiraBrandMark(size: 28)
+
+            Text("Edit Jira board")
+                .font(.system(size: DT.f14, weight: .semibold))
+
+            TextField(
+                "https://your-org.atlassian.net/jira/software/projects/PROJ/boards",
+                text: $draftURL
+            )
+            .textFieldStyle(.roundedBorder)
+            .onSubmit(saveBoard)
+            .frame(width: 460)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: DT.f11))
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+
+            HStack(spacing: DT.s8) {
+                Button("Remove board", role: .destructive) {
+                    Task { @MainActor in
+                        await widget.clearBoardURL()
+                        widget.showingBoardEditor = false
+                    }
+                }
+
+                Spacer()
+
+                Button("Cancel") {
+                    widget.showingBoardEditor = false
+                }
+
+                Button("Save board", action: saveBoard)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(saving || draftURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(DT.s24)
+        .frame(minWidth: 520)
+    }
+
+    private func saveBoard() {
+        let trimmed = draftURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !saving else { return }
+        saving = true
+        errorMessage = nil
+        Task { @MainActor in
+            defer { saving = false }
+            if let error = await widget.saveBoardURL(urlString: trimmed) {
+                errorMessage = error
+            } else {
+                widget.showingBoardEditor = false
+            }
         }
     }
 }
