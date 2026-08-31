@@ -142,7 +142,16 @@ final class JiraBoardWidget: Work42Widget {
                     let issueKey = currentURL
                         .split(separator: "/browse/", maxSplits: 1)
                         .last.map { String($0.split(separator: "?").first ?? $0) }
-                    let taskName = (issueKey?.isEmpty == false) ? issueKey! : "Jira Task"
+                    // Name the session "<KEY>: <summary>". The summary is a
+                    // fail-soft `acli` lookup (a nicer name when acli answers,
+                    // the bare key when it doesn't) — mirrors the github-prs
+                    // `gh`-title path; never blocks launch.
+                    let taskName: String
+                    if let key = issueKey, !key.isEmpty {
+                        taskName = await Self.sessionName(forKey: key, services: services)
+                    } else {
+                        taskName = "Jira Task"
+                    }
                     try await services.intents.execute(
                         id: "session.open.task",
                         params: [
@@ -161,6 +170,24 @@ final class JiraBoardWidget: Work42Widget {
                 }
             )
         ]
+    }
+
+    /// The session name for a linked issue: `"<KEY>: <summary>"` when a
+    /// fail-soft `acli` lookup answers, else the bare key. Mirrors the
+    /// github-prs `gh`-title path — a nicer name when the CLI is available,
+    /// never blocking or failing the launch.
+    private static func sessionName(forKey key: String, services: SessionServices) async -> String {
+        let command = "\(jiraCLIPathPrefix) && acli jira workitem view \(key) "
+            + "--fields summary --json"
+        guard let result = try? await services.shell.run(command: command),
+              result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return key }
+        let fields = (object["fields"] as? [String: Any]) ?? object
+        let summary = (fields["summary"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return summary.isEmpty ? key : "\(key): \(summary)"
     }
 
     // MARK: - Lifecycle
@@ -511,3 +538,8 @@ public func work42_widget_main() -> UnsafeMutableRawPointer {
     }
     return result
 }
+
+// PATH enrichment for the fail-soft `acli` session-name lookup. The app may be
+// launched from Finder with a minimal PATH that omits Homebrew/local dirs.
+private let jiraCLIPathPrefix =
+    "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin\""
