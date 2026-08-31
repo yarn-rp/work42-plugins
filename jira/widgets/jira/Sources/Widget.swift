@@ -331,12 +331,9 @@ final class JiraWidget: Work42Widget {
 
 // MARK: - Background agent (Work42WidgetBackground)
 
-/// Publishes the linked issue's key chip(s) to the session header while the
-/// session is alive — regardless of whether the widget's tab is shown — mirroring
-/// the GitHub PR widget's agent-based labels. The Jira widget has no headless
-/// data source (it renders a Jira page via a cookie-auth BrowserSurface), so the
-/// "background process" only re-reads the linked issues from storage and
-/// republishes the chip(s); it never fetches Jira state.
+/// Publishes linked issue chip groups while the session is alive — regardless
+/// of whether the widget's tab is shown. The key segment is unconditional;
+/// Atlassian's `acli` enriches it with status and labels when available.
 @Observable
 @MainActor
 final class JiraBackgroundAgent: WidgetBackgroundAgent {
@@ -364,9 +361,9 @@ final class JiraBackgroundAgent: WidgetBackgroundAgent {
         headerLabels = []
     }
 
-    /// Re-read the linked issues from the widget's own `jira` storage namespace
-    /// and publish the issue-key chip(s). Read-only; fails quietly when storage
-    /// is unavailable, and clears when no issue is linked.
+    /// Re-read linked issues and publish key • status • label segments. Storage
+    /// failures retain the prior labels; every CLI failure falls back to the
+    /// newly-built key-only group without surfacing an error.
     private func refresh(services: WidgetBackgroundServices) async {
         let issuesVal: WidgetJSONValue?
         let legacyURL: WidgetJSONValue?
@@ -381,27 +378,100 @@ final class JiraBackgroundAgent: WidgetBackgroundAgent {
 
         let entries = JiraEntry.resolve(issues: issuesVal, legacyURL: legacyURL, legacyKey: legacyKey)
 
-        // One branded chip per attached issue: the issue key on the Jira-blue
-        // brand fill (`#0052CC`), leading a ticket glyph, linking to the issue.
-        // `groupId = the issue url` marks it as its own segmented group so a
-        // status segment can be added later (Jira exposes no live status here);
-        // with a single segment it renders as one branded pill. Multiple issues
-        // therefore surface as multiple branded chips instead of only the first.
+        // One segmented group per issue. The Jira-branded key always renders;
+        // status/labels are appended only after a successful, parseable acli read.
         var labels: [WidgetHeaderLabel] = []
         for entry in entries {
             let key = entry.key ?? parseJiraKey(from: entry.url)
             let text = (key?.isEmpty == false) ? key! : (URL(string: entry.url)?.host ?? entry.url)
+            let issueURL = URL(string: entry.url)
             labels.append(WidgetHeaderLabel(
                 text: text,
                 systemIcon: "ticket",
                 iconImageData: jiraMarkPNG,
                 brandColorHex: "#0052CC",   // Jira blue
                 tint: .neutral,
-                url: URL(string: entry.url),
+                url: issueURL,
                 groupId: entry.url
             ))
+
+            guard let key, !key.isEmpty,
+                  let state = await jiraState(for: key, services: services)
+            else { continue }
+
+            labels.append(WidgetHeaderLabel(
+                text: state.status,
+                tint: statusTint(state.status),
+                url: issueURL,
+                groupId: entry.url
+            ))
+            for label in state.labels {
+                labels.append(WidgetHeaderLabel(
+                    text: label,
+                    systemIcon: "tag",
+                    tint: .neutral,
+                    url: issueURL,
+                    groupId: entry.url
+                ))
+            }
         }
         headerLabels = labels
+    }
+
+    private func jiraState(
+        for key: String,
+        services: WidgetBackgroundServices
+    ) async -> JiraCLIState? {
+        let command = "\(jiraCLIPathPrefix) && acli jira workitem view \(key) "
+            + "--fields status,labels --json"
+        guard let result = try? await services.shell.run(command: command),
+              result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return JiraCLIState(json: object)
+    }
+
+    private func statusTint(_ status: String) -> WidgetHeaderLabelTint {
+        let normalized = status.lowercased()
+        if normalized.contains("done") || normalized.contains("closed") || normalized.contains("resolved") {
+            return .success
+        }
+        if normalized.contains("blocked") || normalized.contains("cancel") || normalized.contains("failed") {
+            return .failure
+        }
+        if normalized.contains("progress") || normalized.contains("review") {
+            return .warning
+        }
+        return .neutral
+    }
+}
+
+private let jiraCLIPathPrefix =
+    "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin\""
+
+private struct JiraCLIState {
+    let status: String
+    let labels: [String]
+
+    init?(json: [String: Any]) {
+        let fields = (json["fields"] as? [String: Any]) ?? json
+
+        if let status = fields["status"] as? String {
+            self.status = status
+        } else if let statusObject = fields["status"] as? [String: Any],
+                  let name = statusObject["name"] as? String,
+                  !name.isEmpty {
+            self.status = name
+        } else {
+            return nil
+        }
+
+        self.labels = (fields["labels"] as? [Any] ?? []).compactMap { value in
+            guard let label = value as? String else { return nil }
+            let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
     }
 }
 
