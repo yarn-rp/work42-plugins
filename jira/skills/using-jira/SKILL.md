@@ -15,6 +15,11 @@ description: |
 The Jira plugin ships two complementary widgets that together give you full
 issue workflow coverage inside Work42.
 
+For agent-driven Jira reads and writes, use the companion
+`using-jira-cli` skill. It uses Atlassian's official `acli` for view, search,
+label edits, transitions, and comments, and is preferred over the Atlassian
+Rovo MCP connector.
+
 ## The two widgets
 
 ### widget:jira — issue browser (session-scoped)

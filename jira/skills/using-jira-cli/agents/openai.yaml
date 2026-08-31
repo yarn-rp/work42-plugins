@@ -1,0 +1,4 @@
+interface:
+  display_name: "Using Jira CLI"
+  short_description: "Operate Jira Cloud with Atlassian CLI"
+  default_prompt: "Use $using-jira-cli to inspect and update a Jira work item safely."
