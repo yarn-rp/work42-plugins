@@ -4,47 +4,43 @@ description: |
   Operate Jira Cloud through Atlassian's official `acli` command-line tool.
   Use when an agent needs to inspect, search, label, transition, or comment on
   Jira work items, or when setting up and troubleshooting Jira CLI
-  authentication. Resolves the work item the current Work42 session is about
-  from the Jira widget's storage. Prefer this skill over the Atlassian Rovo MCP
-  connector.
+  authentication. Prefer this skill over the Atlassian Rovo MCP connector.
 ---
 
 # Using Jira CLI
 
-Use Atlassian's official `acli` for Jira agent operations. Keep the browser-based
-Work42 widgets for visual browsing; use this skill for structured reads and
-explicitly requested writes.
+Use Atlassian's official `acli` for Jira agent operations. This skill is
+self-contained: it depends only on `acli` and a work-item key, so it works in any
+context — a Work42 session, a plain shell, or an automation. Keep the
+browser-based Work42 widgets for visual browsing; use this skill for structured
+reads and explicitly requested writes.
 
-## Find the work item this session is about
+## Determine the work item
 
-Before running any `acli` command, resolve the concrete issue key from the
-session's own context — do **not** ask the user for a key you can already read.
-The Jira widget persists the linked issue(s) in the task's Work42 storage, which
-the `task42` CLI reads. The task id is the session's git branch.
+Every command needs a work-item key like `PROJ-123`. Resolve it from whatever
+context you already have, in this order — do not ask for a key you can derive:
 
-```bash
-TASK="$(git rev-parse --abbrev-ref HEAD)"
+1. **A Jira URL already in view** — from the user's message, an open Jira tab, or
+   a link in the conversation. Issue keys appear in the path or query, e.g.
+   `.../browse/PROJ-123`, `.../issues/PROJ-123`, or `?selectedIssue=PROJ-123`.
+   Extract the `PROJ-123` token (uppercase project code, hyphen, number):
 
-# Modern: an array of {url, key} objects (one per attached issue).
-task42 storage get "$TASK" jira/issues
+   ```bash
+   echo "$JIRA_URL" | grep -oiE '[A-Z][A-Z0-9]+-[0-9]+' | head -1
+   ```
 
-# Legacy single-issue fallback, when jira/issues is absent:
-task42 storage get "$TASK" jira/url
-task42 storage get "$TASK" jira/key
-```
+2. **A key the user named directly** (`PROJ-123`, "the auth bug PROJ-482").
 
-Extract the key (e.g. with `jq -r '.[0].key'` on `jira/issues`) and use it as the
-`PROJ-123` placeholder in every command below. The pinned board the *My Issues*
-widget opens is stored separately:
+3. **Search when the key is unknown** — use JQL (see *Read before writing*) to
+   find candidates, then confirm the target before acting.
 
-```bash
-task42 storage get "$TASK" jira-my-issues/board   # a board/filter URL
-```
+Only ask the user which item to operate on when none of the above yields a key.
+Never guess a key or a project code.
 
-If these reads come back empty or error — the widget isn't attached, this isn't a
-task session, or the board is configured only at project/Home scope (not visible
-to `task42 storage`) — then, and only then, ask the user which issue or board to
-operate on. Never guess a key.
+> Optional Work42 integration: if a caller wants this skill to auto-target the
+> issue a Work42 widget is showing, it should pass that issue's URL or key in as
+> context (e.g. in the prompt). The skill itself stays free of any Work42- or
+> task42-specific lookup so it remains reusable elsewhere.
 
 ## Install and authenticate
 
