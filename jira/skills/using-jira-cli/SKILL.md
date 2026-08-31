@@ -17,30 +17,37 @@ reads and explicitly requested writes.
 
 ## Determine the work item
 
-Every command needs a work-item key like `PROJ-123`. Resolve it from whatever
-context you already have, in this order — do not ask for a key you can derive:
+Every command needs a work-item key like `PROJ-123`. When you're the agent in a
+Work42 session, get it straight from the Jira widget's state — that is what this
+skill is built for. Widgets persist their state in Work42's generic key/value
+storage, read with the generic `task42 storage` verb (there is deliberately no
+Jira-specific CLI command; the generic `storage` verb is the interface). One
+snippet resolves the current issue:
 
-1. **A Jira URL already in view** — from the user's message, an open Jira tab, or
-   a link in the conversation. Issue keys appear in the path or query, e.g.
-   `.../browse/PROJ-123`, `.../issues/PROJ-123`, or `?selectedIssue=PROJ-123`.
-   Extract the `PROJ-123` token (uppercase project code, hyphen, number):
+```bash
+TASK="$(git rev-parse --abbrev-ref HEAD)"                                  # session task id = branch
+KEY="$(task42 storage get "$TASK" jira/issues 2>/dev/null | jq -r '.[0].key // empty')"
+KEY="${KEY:-$(task42 storage get "$TASK" jira/key 2>/dev/null | jq -r '. // empty')}"  # legacy single-issue
+echo "${KEY:?no linked issue in widget storage — use a URL, a named key, or search}"
+```
 
-   ```bash
-   echo "$JIRA_URL" | grep -oiE '[A-Z][A-Z0-9]+-[0-9]+' | head -1
-   ```
+The Jira widget writes linked issue(s) under the `jira` namespace
+(`jira/issues` = a JSON array of `{url, key}`; legacy `jira/url` + `jira/key`).
+The *My Issues* widget writes the pinned board under `jira-my-issues/board` (a
+board/filter URL).
 
-2. **A key the user named directly** (`PROJ-123`, "the auth bug PROJ-482").
+When there is no widget storage — outside a session, or the widget isn't
+attached — resolve the key from context instead:
 
-3. **Search when the key is unknown** — use JQL (see *Read before writing*) to
-   find candidates, then confirm the target before acting.
+- **A Jira URL in view** (user message, open tab, a link). Keys appear as
+  `.../browse/PROJ-123`, `.../issues/PROJ-123`, or `?selectedIssue=PROJ-123`:
+  `echo "$JIRA_URL" | grep -oiE '[A-Z][A-Z0-9]+-[0-9]+' | head -1`.
+- **A key the user named** (`PROJ-123`, "the auth bug PROJ-482").
+- **JQL search** (see *Read before writing*) when the key is unknown; confirm the
+  target before acting.
 
-Only ask the user which item to operate on when none of the above yields a key.
-Never guess a key or a project code.
-
-> Optional Work42 integration: if a caller wants this skill to auto-target the
-> issue a Work42 widget is showing, it should pass that issue's URL or key in as
-> context (e.g. in the prompt). The skill itself stays free of any Work42- or
-> task42-specific lookup so it remains reusable elsewhere.
+Only ask which item to operate on when none of the above yields a key. Never
+guess a key or a project code.
 
 ## Install and authenticate
 
