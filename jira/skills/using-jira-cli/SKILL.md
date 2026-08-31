@@ -4,7 +4,9 @@ description: |
   Operate Jira Cloud through Atlassian's official `acli` command-line tool.
   Use when an agent needs to inspect, search, label, transition, or comment on
   Jira work items, or when setting up and troubleshooting Jira CLI
-  authentication. Prefer this skill over the Atlassian Rovo MCP connector.
+  authentication. Resolves the work item the current Work42 session is about
+  from the Jira widget's storage. Prefer this skill over the Atlassian Rovo MCP
+  connector.
 ---
 
 # Using Jira CLI
@@ -12,6 +14,37 @@ description: |
 Use Atlassian's official `acli` for Jira agent operations. Keep the browser-based
 Work42 widgets for visual browsing; use this skill for structured reads and
 explicitly requested writes.
+
+## Find the work item this session is about
+
+Before running any `acli` command, resolve the concrete issue key from the
+session's own context — do **not** ask the user for a key you can already read.
+The Jira widget persists the linked issue(s) in the task's Work42 storage, which
+the `task42` CLI reads. The task id is the session's git branch.
+
+```bash
+TASK="$(git rev-parse --abbrev-ref HEAD)"
+
+# Modern: an array of {url, key} objects (one per attached issue).
+task42 storage get "$TASK" jira/issues
+
+# Legacy single-issue fallback, when jira/issues is absent:
+task42 storage get "$TASK" jira/url
+task42 storage get "$TASK" jira/key
+```
+
+Extract the key (e.g. with `jq -r '.[0].key'` on `jira/issues`) and use it as the
+`PROJ-123` placeholder in every command below. The pinned board the *My Issues*
+widget opens is stored separately:
+
+```bash
+task42 storage get "$TASK" jira-my-issues/board   # a board/filter URL
+```
+
+If these reads come back empty or error — the widget isn't attached, this isn't a
+task session, or the board is configured only at project/Home scope (not visible
+to `task42 storage`) — then, and only then, ask the user which issue or board to
+operate on. Never guess a key.
 
 ## Install and authenticate
 
