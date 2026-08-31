@@ -30,6 +30,7 @@
 //   services.storage.set(key: "prs", value:) writes directly to github/prs — no
 //   shell indirection needed. Agents use `task42 storage set <id> github/prs ...`.
 
+import AppKit
 import Observation
 import SwiftUI
 import Work42WidgetKit
@@ -493,9 +494,24 @@ final class GitHubBackgroundAgent: WidgetBackgroundAgent {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             while !Task.isCancelled {
                 await self?.poll(services: services)
-                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60 seconds
+                // Cadence is the app-level PR-watch interval preference, read
+                // live each cycle so a change in Settings → Plugins applies on
+                // the next poll (defaults to 60s when unset).
+                let seconds = Self.pollIntervalSeconds()
+                try? await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
             }
         }
+    }
+
+    /// Poll cadence in seconds. Reads the app-wide PR-watch interval preference
+    /// (`prWatch.pollIntervalSeconds`, the same `@AppStorage` key the
+    /// Settings → Plugins "PR-watch interval" row writes), clamped to a sane
+    /// range. Falls back to 60s when unset or out of range. The widget runs
+    /// in-process, so `UserDefaults.standard` is the app's own defaults domain.
+    private static func pollIntervalSeconds() -> Int {
+        let stored = UserDefaults.standard.integer(forKey: "prWatch.pollIntervalSeconds")
+        guard stored > 0 else { return 60 }
+        return min(3600, max(15, stored))
     }
 
     func stop() {
@@ -736,6 +752,7 @@ final class GitHubPRWidget: Work42Widget {
     let id = "github"
     let title = "GitHub PR"
     let icon = "arrow.triangle.pull"
+    var iconImageData: Data? { githubMarkPNG }
 
     /// Session surfaces only — a single PR belongs to a session, not the Home
     /// dashboard (the `github-prs` board is the Home-facing widget). AC14.
@@ -1251,9 +1268,7 @@ private struct PREmptyStateView: View {
 
     var body: some View {
         VStack(spacing: DT.s16) {
-            Image(systemName: "arrow.triangle.pull")
-                .font(.system(size: 28, weight: .light))
-                .foregroundStyle(DT.textTertiary)
+            GitHubBrandMark(size: 32)
 
             Text("No PR yet")
                 .font(.system(size: DT.f13, weight: .medium))
@@ -1316,6 +1331,8 @@ private struct PRAttachSheet: View {
 
     var body: some View {
         VStack(spacing: DT.s16) {
+            GitHubBrandMark(size: 28)
+
             Text("Attach a GitHub PR")
                 .font(.system(size: DT.f14, weight: .semibold))
 
@@ -1367,6 +1384,26 @@ private struct PRAttachSheet: View {
                 draftURL = ""
                 widget.showingAttachForm = false
             }
+        }
+    }
+}
+
+/// Reusable in-widget identity mark. The SDK independently carries the same
+/// bytes to the host's widget tile and browser-widget chrome.
+private struct GitHubBrandMark: View {
+    let size: CGFloat
+
+    @ViewBuilder
+    var body: some View {
+        if let data = githubMarkPNG, let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+        } else {
+            Image(systemName: "arrow.triangle.pull")
+                .font(.system(size: size, weight: .light))
+                .foregroundStyle(DT.textTertiary)
         }
     }
 }

@@ -49,11 +49,16 @@ Write (from the widget's own storage surface):
 services.storage.set(key: "board", value: .string(boardURL))
 ```
 
-## Changing the board URL
+## Editing or removing the board URL
 
-Click the **Change board** button (bottom-right of the widget while the board is
-open). This clears the stored URL and returns the widget to the paste-URL form.
-Enter a new board URL and click **Pin board**.
+Click **Edit board** in the bottom-right of the widget while the board is open.
+The editor opens with the current URL pre-filled. Change it and click **Save
+board**; the new value is validated and replaces `jira-my-issues/board` only
+after a successful save. A validation or persistence error leaves the previous
+board untouched and displays an inline error.
+
+Use the separate destructive **Remove board** action in that editor only when
+you want to clear the stored URL and return to the first-use paste form.
 
 Alternatively, from the CLI:
 ```bash
@@ -74,8 +79,9 @@ task42 storage delete <task-id> jira-my-issues/board
    activate. Prevents flashing the empty-state form before the URL loads.
 
 3. **Board state** — `BrowserSurface` rendering the pinned Jira board. The full
-   page is shown (no CSS selector isolation). A **Change board** button is always
-   visible in the bottom-right corner to return to the empty state.
+   page is shown (no CSS selector isolation). An **Edit board** button is always
+   visible in the bottom-right corner; it opens a pre-filled editor with a
+   separate **Remove board** action.
 
 ## "Start Task Session" action-area button
 

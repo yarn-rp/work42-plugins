@@ -2,7 +2,8 @@
 name: widget-github-prs
 description: |
   How to use the github-prs widget (widget id: github-prs). This widget
-  renders one browser tab per git repository found in the workspace root,
+  renders one browser tab per git repository found in the workspace root or
+  added manually,
   opening each repo's GitHub pull-requests page
   (https://github.com/<owner>/<repo>/pulls). It lives on the Home surface.
   A GitHub-branded "Review GitHub PR" action-center button is enabled when the
@@ -19,6 +20,7 @@ description: |
 The `github-prs` widget is a **Home-surface browser widget** that:
 
 - Enumerates **git repositories** in the workspace root via `git` (no gh CLI).
+- Persists manually added repositories that are not checked out locally.
 - Opens **one browser tab per repo** at its GitHub pull-requests page:
   `https://github.com/<owner>/<repo>/pulls`.
 - Shows a **fail-loud error card** when no GitHub repos are found or when git
@@ -55,6 +57,27 @@ explicit forms are all supported). The resulting PRs-page URL is:
 https://github.com/<owner>/<repo>/pulls
 ```
 
+## Adding repositories manually
+
+Use the browser widget's **+** control, or **Add repository** on the empty/error
+card, to add a repository that is not checked out in the workspace. Enter either
+`owner/repo` or a GitHub repository URL. Invalid or non-GitHub input is rejected
+inline and does not alter the saved list.
+
+Manual additions are stored as an array of normalized `owner/repo` strings at:
+
+| Full address | Type | Description |
+|---|---|---|
+| `github-prs/repos` | array of strings | Manually added GitHub repositories. |
+
+On every activation the widget unions this stored list with auto-discovered
+workspace repositories and deduplicates by lowercased `owner/repo`. Workspace
+repositories are never hidden. A manual repository that later becomes a local
+workspace checkout automatically collapses to the auto-discovered tab.
+
+Manual-only tabs are for browsing PRs. **Review GitHub PR** remains disabled for
+them because starting a code-review session requires a local workspace checkout.
+
 ## Requirements
 
 | Requirement | Details |
@@ -68,8 +91,9 @@ Browsing and starting a review use `git`. Launch passes
 
 ## Tabs
 
-The widget renders **one browser tab per workspace repo**. The tab title is
-`owner/repo`. Switching between tabs shows different repos' PR lists.
+The widget renders **one browser tab per auto-discovered or manually added
+repo**. The tab title is `owner/repo`. Switching between tabs shows different
+repos' PR lists.
 
 ## Action-center button — “Review GitHub PR”
 
@@ -113,10 +137,11 @@ fail-loud card is shown with:
 
 ## Session metadata
 
-This Home widget discovers repositories fresh on every activation and does not
-use Home storage. When it starts a review, it seeds `github/prs` in the new
-session's widget storage so the separate `github` session widget can render and
-monitor the selected PR.
+This Home widget discovers workspace repositories fresh on every activation and
+stores manual additions in project-level Home storage at `github-prs/repos`.
+When it starts a review, it seeds `github/prs` in the new session's widget
+storage so the separate `github` session widget can render and monitor the
+selected PR.
 
 ## Agent usage
 

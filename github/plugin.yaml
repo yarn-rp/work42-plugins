@@ -7,4 +7,4 @@ description: >
   launch). Includes a GitHub Review tab template and a plugin skill that
   explains how the two widgets work together.
 author: work42
-sdk_version: 5
+sdk_version: 6

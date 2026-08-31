@@ -24,9 +24,12 @@
 //   [A-Z][A-Z0-9]+-[0-9]+, preferring the component that follows /browse/ or
 //   /issues/. Handles every Atlassian Cloud URL shape.
 
+import AppKit
 import Observation
 import SwiftUI
 import Work42WidgetKit
+
+private let jiraMarkPNG = Data(base64Encoded: "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")
 
 // MARK: - Jira key parsing
 
@@ -130,6 +133,7 @@ final class JiraWidget: Work42Widget {
     let id = "jira"
     let title = "Jira"
     let icon = "ticket"
+    var iconImageData: Data? { jiraMarkPNG }
 
     /// Session surfaces only — issues belong to a session, not the Home dashboard
     /// (the `jira-my-issues` board is the Home-facing widget). AC14.
@@ -327,12 +331,9 @@ final class JiraWidget: Work42Widget {
 
 // MARK: - Background agent (Work42WidgetBackground)
 
-/// Publishes the linked issue's key chip(s) to the session header while the
-/// session is alive — regardless of whether the widget's tab is shown — mirroring
-/// the GitHub PR widget's agent-based labels. The Jira widget has no headless
-/// data source (it renders a Jira page via a cookie-auth BrowserSurface), so the
-/// "background process" only re-reads the linked issues from storage and
-/// republishes the chip(s); it never fetches Jira state.
+/// Publishes linked issue chip groups while the session is alive — regardless
+/// of whether the widget's tab is shown. The key segment is unconditional;
+/// Atlassian's `acli` enriches it with status and labels when available.
 @Observable
 @MainActor
 final class JiraBackgroundAgent: WidgetBackgroundAgent {
@@ -360,9 +361,9 @@ final class JiraBackgroundAgent: WidgetBackgroundAgent {
         headerLabels = []
     }
 
-    /// Re-read the linked issues from the widget's own `jira` storage namespace
-    /// and publish the issue-key chip(s). Read-only; fails quietly when storage
-    /// is unavailable, and clears when no issue is linked.
+    /// Re-read linked issues and publish key • status • label segments. Storage
+    /// failures retain the prior labels; every CLI failure falls back to the
+    /// newly-built key-only group without surfacing an error.
     private func refresh(services: WidgetBackgroundServices) async {
         let issuesVal: WidgetJSONValue?
         let legacyURL: WidgetJSONValue?
@@ -377,26 +378,100 @@ final class JiraBackgroundAgent: WidgetBackgroundAgent {
 
         let entries = JiraEntry.resolve(issues: issuesVal, legacyURL: legacyURL, legacyKey: legacyKey)
 
-        // One branded chip per attached issue: the issue key on the Jira-blue
-        // brand fill (`#0052CC`), leading a ticket glyph, linking to the issue.
-        // `groupId = the issue url` marks it as its own segmented group so a
-        // status segment can be added later (Jira exposes no live status here);
-        // with a single segment it renders as one branded pill. Multiple issues
-        // therefore surface as multiple branded chips instead of only the first.
+        // One segmented group per issue. The Jira-branded key always renders;
+        // status/labels are appended only after a successful, parseable acli read.
         var labels: [WidgetHeaderLabel] = []
         for entry in entries {
             let key = entry.key ?? parseJiraKey(from: entry.url)
             let text = (key?.isEmpty == false) ? key! : (URL(string: entry.url)?.host ?? entry.url)
+            let issueURL = URL(string: entry.url)
             labels.append(WidgetHeaderLabel(
                 text: text,
                 systemIcon: "ticket",
+                iconImageData: jiraMarkPNG,
                 brandColorHex: "#0052CC",   // Jira blue
                 tint: .neutral,
-                url: URL(string: entry.url),
+                url: issueURL,
                 groupId: entry.url
             ))
+
+            guard let key, !key.isEmpty,
+                  let state = await jiraState(for: key, services: services)
+            else { continue }
+
+            labels.append(WidgetHeaderLabel(
+                text: state.status,
+                tint: statusTint(state.status),
+                url: issueURL,
+                groupId: entry.url
+            ))
+            for label in state.labels {
+                labels.append(WidgetHeaderLabel(
+                    text: label,
+                    systemIcon: "tag",
+                    tint: .neutral,
+                    url: issueURL,
+                    groupId: entry.url
+                ))
+            }
         }
         headerLabels = labels
+    }
+
+    private func jiraState(
+        for key: String,
+        services: WidgetBackgroundServices
+    ) async -> JiraCLIState? {
+        let command = "\(jiraCLIPathPrefix) && acli jira workitem view \(key) "
+            + "--fields status,labels --json"
+        guard let result = try? await services.shell.run(command: command),
+              result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return JiraCLIState(json: object)
+    }
+
+    private func statusTint(_ status: String) -> WidgetHeaderLabelTint {
+        let normalized = status.lowercased()
+        if normalized.contains("done") || normalized.contains("closed") || normalized.contains("resolved") {
+            return .success
+        }
+        if normalized.contains("blocked") || normalized.contains("cancel") || normalized.contains("failed") {
+            return .failure
+        }
+        if normalized.contains("progress") || normalized.contains("review") {
+            return .warning
+        }
+        return .neutral
+    }
+}
+
+private let jiraCLIPathPrefix =
+    "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin\""
+
+private struct JiraCLIState {
+    let status: String
+    let labels: [String]
+
+    init?(json: [String: Any]) {
+        let fields = (json["fields"] as? [String: Any]) ?? json
+
+        if let status = fields["status"] as? String {
+            self.status = status
+        } else if let statusObject = fields["status"] as? [String: Any],
+                  let name = statusObject["name"] as? String,
+                  !name.isEmpty {
+            self.status = name
+        } else {
+            return nil
+        }
+
+        self.labels = (fields["labels"] as? [Any] ?? []).compactMap { value in
+            guard let label = value as? String else { return nil }
+            let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
     }
 }
 
@@ -499,9 +574,7 @@ private struct JiraEmptyStateView: View {
 
     var body: some View {
         VStack(spacing: DT.s16) {
-            Image(systemName: "ticket")
-                .font(.system(size: 28, weight: .light))
-                .foregroundStyle(DT.textTertiary)
+            JiraBrandMark(size: 32)
 
             Text("No Jira ticket")
                 .font(.system(size: DT.f13, weight: .medium))
@@ -564,6 +637,8 @@ private struct JiraAttachSheet: View {
 
     var body: some View {
         VStack(spacing: DT.s16) {
+            JiraBrandMark(size: 28)
+
             Text("Attach a Jira issue")
                 .font(.system(size: DT.f14, weight: .semibold))
 
@@ -615,6 +690,26 @@ private struct JiraAttachSheet: View {
                 draftURL = ""
                 widget.showingAttachForm = false
             }
+        }
+    }
+}
+
+/// Reusable in-widget Jira identity mark. Browser tabs intentionally retain
+/// their concise ticket glyph; the brand image identifies the widget itself.
+private struct JiraBrandMark: View {
+    let size: CGFloat
+
+    @ViewBuilder
+    var body: some View {
+        if let data = jiraMarkPNG, let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+        } else {
+            Image(systemName: "ticket")
+                .font(.system(size: size, weight: .light))
+                .foregroundStyle(DT.textTertiary)
         }
     }
 }

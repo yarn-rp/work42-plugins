@@ -62,6 +62,21 @@ The widget accepts any Atlassian Cloud URL that contains a Jira issue key
 - `https://myorg.atlassian.net/issues/PROJ-123`
 - `https://myorg.atlassian.net/jira/software/projects/PROJ/issues/PROJ-123`
 
+## Header chips and Atlassian CLI
+
+The widget's background agent always publishes a Jira-branded issue-key segment.
+Every 60 seconds it also runs:
+
+```bash
+acli jira workitem view PROJ-123 --fields status,labels --json
+```
+
+When `acli` is installed, authenticated, and returns parseable JSON, the chip
+group becomes **key • status • labels**. If the CLI is missing, logged out,
+errors, or returns unexpected data, the widget silently keeps the key-only chip;
+the browser widget remains usable and no error banner is shown. Use the
+plugin-level `using-jira-cli` skill for installation and authentication.
+
 ## Widget lifecycle
 
 - **Empty state**: paste-URL form → on submit, writes `jira/url` + `jira/key`
