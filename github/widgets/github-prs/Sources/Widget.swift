@@ -4,7 +4,8 @@
 //
 // DESIGN (settled with Yan):
 //   A HOME-surface browser widget that renders ONE TAB PER WORKSPACE REPOSITORY
-//   at that repo's GitHub PRs page (https://github.com/<owner>/<repo>/pulls).
+//   plus any manually stored repositories, at each repo's GitHub PRs page
+//   (https://github.com/<owner>/<repo>/pulls).
 //
 // REPO ENUMERATION (shell, no gh CLI required):
 //   On Home, services.shell cwd = the multi-repo workspace root. The widget:
@@ -44,8 +45,9 @@ import Work42WidgetKit
 
 /// One workspace git repository resolved to its GitHub PRs page URL.
 struct RepoInfo: Sendable, Equatable {
-    /// RepoDiscovery-compatible workspace key ("." for a root repo).
-    var repoKey: String
+    /// RepoDiscovery-compatible workspace key ("." for a root repo). Nil for
+    /// manually added repositories that have no local checkout.
+    var repoKey: String?
     /// "owner/repo" — used as the browser tab title.
     var ownerRepo: String
     /// https://github.com/<owner>/<repo>/pulls
@@ -117,6 +119,19 @@ private func splitGitHubOwnerRepo(_ path: String) -> (owner: String, repo: Strin
     return (owner, repo)
 }
 
+/// Parse user input for the add-repository form. Accepts a GitHub remote/URL or
+/// exactly `owner/repo`; rejects URLs for any other host and extra path parts.
+private func parseAddedGitHubRepo(_ input: String) -> (owner: String, repo: String)? {
+    let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let parsed = parseGitHubOwnerRepo(trimmed) { return parsed }
+    guard !trimmed.contains("://"), !trimmed.contains("@") else { return nil }
+    let parts = trimmed
+        .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        .split(separator: "/", omittingEmptySubsequences: true)
+    guard parts.count == 2 else { return nil }
+    return splitGitHubOwnerRepo(trimmed)
+}
+
 /// Return true when `urlString` points to a GitHub PR page (path: /owner/repo/pull/<N>).
 private func isGitHubPRPage(_ urlString: String) -> Bool {
     githubPRReference(urlString) != nil
@@ -170,6 +185,7 @@ final class GitHubPRsWidget: Work42Widget {
     // MARK: - Observed state (drives the view)
 
     var loadState: GitHubPRsLoadState = .loading
+    var showingAddRepoForm = false
 
     // MARK: - Intents
 
@@ -191,7 +207,7 @@ final class GitHubPRsWidget: Work42Widget {
                           case .ready(let repos) = self.loadState
                     else { return false }
                     return repos.contains {
-                        $0.ownerRepo.lowercased() == reference.ownerRepo
+                        $0.ownerRepo.lowercased() == reference.ownerRepo && $0.repoKey != nil
                     }
                 },
                 perform: { [weak self] in
@@ -202,11 +218,12 @@ final class GitHubPRsWidget: Work42Widget {
                     guard case .ready(let repos) = self.loadState,
                           let repo = repos.first(where: {
                               $0.ownerRepo.lowercased() == reference.ownerRepo
-                          })
+                          }),
+                          let repoKey = repo.repoKey
                     else {
                         throw WidgetServiceError(
-                            message: "This pull request is not from a repository in the workspace.",
-                            suggestion: "Open a PR for one of this widget's repository tabs."
+                            message: "This pull request does not have a local workspace checkout.",
+                            suggestion: "Review sessions require an auto-discovered workspace repository."
                         )
                     }
                     // GitHub exposes every PR head through this stable ref,
@@ -231,7 +248,7 @@ final class GitHubPRsWidget: Work42Widget {
                             "name": .string("Code Review: \(prTitle)"),
                             "codeReview": .object([
                                 "branchesByRepository": .object([
-                                    repo.repoKey: .string(reviewRef),
+                                    repoKey: .string(reviewRef),
                                 ]),
                             ]),
                             "initialWidgetStorage": .object([
@@ -273,6 +290,7 @@ final class GitHubPRsWidget: Work42Widget {
         enumerationTask = nil
         services = nil
         loadState = .loading
+        showingAddRepoForm = false
         BrowserSurfaceCache.shared.teardown(key: id)
     }
 
@@ -291,6 +309,7 @@ final class GitHubPRsWidget: Work42Widget {
     /// Empty stdout → no GitHub repos found → error state.
     func enumerateRepos() async {
         guard let services else { return }
+        let manualOwnerRepos = await loadManualOwnerRepos(services: services)
 
         // Shell script:
         //   If the workspace root is itself a git repo, use it (solo-repo workspace).
@@ -315,6 +334,10 @@ final class GitHubPRsWidget: Work42Widget {
         do {
             result = try await services.shell.run(command: cmd)
         } catch {
+            if !manualOwnerRepos.isEmpty {
+                publishRepos(merging: [], manualOwnerRepos: manualOwnerRepos)
+                return
+            }
             loadState = .error(
                 "Could not enumerate workspace repositories.\n\n" +
                 error.localizedDescription +
@@ -324,6 +347,10 @@ final class GitHubPRsWidget: Work42Widget {
         }
 
         guard result.exitCode == 0 else {
+            if !manualOwnerRepos.isEmpty {
+                publishRepos(merging: [], manualOwnerRepos: manualOwnerRepos)
+                return
+            }
             let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             let detail = stderr.isEmpty
                 ? "Shell exited with code \(result.exitCode)."
@@ -350,6 +377,8 @@ final class GitHubPRsWidget: Work42Widget {
             ))
         }
 
+        repos = merge(autoRepos: repos, manualOwnerRepos: manualOwnerRepos)
+
         if repos.isEmpty {
             let rawOutput = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             let msg: String
@@ -365,14 +394,85 @@ final class GitHubPRsWidget: Work42Widget {
             }
             loadState = .error(msg)
         } else {
-            loadState = .ready(repos)
-            // If the BrowserSurface model is already live (cache hit from a prior
-            // activate/configure cycle), sync tabs immediately so the UI reflects
-            // the freshly enumerated repos without waiting for a re-render.
-            if let model = BrowserSurface.model(forKey: id) {
-                syncTabs(to: model, repos: repos)
+            publishRepos(repos)
+        }
+    }
+
+    /// Validate and persist one manual repository. Invalid input returns before
+    /// touching storage, preserving the prior list exactly.
+    func addManualRepo(_ input: String) async -> String? {
+        guard let services else { return "The widget is not active." }
+        guard let (owner, repo) = parseAddedGitHubRepo(input) else {
+            return "Enter owner/repo or a github.com repository URL."
+        }
+
+        let normalized = "\(owner)/\(repo)"
+        var stored = await loadManualOwnerRepos(services: services)
+        if !stored.contains(where: { $0.caseInsensitiveCompare(normalized) == .orderedSame }) {
+            stored.append(normalized)
+            do {
+                try await services.storage.set(
+                    key: "repos",
+                    value: .array(stored.map { .string($0) })
+                )
+            } catch {
+                return "Could not save this repository: \(error.localizedDescription)"
             }
         }
+
+        showingAddRepoForm = false
+        await enumerateRepos()
+        return nil
+    }
+
+    private func loadManualOwnerRepos(services: SessionServices) async -> [String] {
+        guard let value = try? await services.storage.get(namespace: id, key: "repos"),
+              case .array(let values) = value
+        else { return [] }
+
+        var seen: Set<String> = []
+        return values.compactMap { value in
+            guard case .string(let stored) = value,
+                  let (owner, repo) = parseAddedGitHubRepo(stored)
+            else { return nil }
+            let normalized = "\(owner)/\(repo)"
+            guard seen.insert(normalized.lowercased()).inserted else { return nil }
+            return normalized
+        }
+    }
+
+    private func merge(autoRepos: [RepoInfo], manualOwnerRepos: [String]) -> [RepoInfo] {
+        var merged: [RepoInfo] = []
+        var seen: Set<String> = []
+
+        for repo in autoRepos {
+            guard seen.insert(repo.ownerRepo.lowercased()).inserted else { continue }
+            merged.append(repo)
+        }
+        for ownerRepo in manualOwnerRepos {
+            let key = ownerRepo.lowercased()
+            guard seen.insert(key).inserted,
+                  let url = URL(string: "https://github.com/\(ownerRepo)/pulls")
+            else { continue }
+            merged.append(RepoInfo(
+                repoKey: nil,
+                ownerRepo: ownerRepo,
+                url: url,
+                tabID: UUID()
+            ))
+        }
+        return merged
+    }
+
+    private func publishRepos(_ repos: [RepoInfo]) {
+        loadState = .ready(repos)
+        if let model = BrowserSurface.model(forKey: id) {
+            syncTabs(to: model, repos: repos)
+        }
+    }
+
+    private func publishRepos(merging autoRepos: [RepoInfo], manualOwnerRepos: [String]) {
+        publishRepos(merge(autoRepos: autoRepos, manualOwnerRepos: manualOwnerRepos))
     }
 
     /// Push one BrowserTab per repo into `model` via replaceTabs.
@@ -401,25 +501,35 @@ private struct GitHubPRsRootView: View {
     let services: SessionServices
 
     var body: some View {
-        switch widget.loadState {
-        case .loading:
-            GitHubPRsLoadingView()
+        Group {
+            switch widget.loadState {
+            case .loading:
+                GitHubPRsLoadingView()
 
-        case .error(let message):
-            GitHubPRsErrorView(message: message) {
-                Task { await widget.enumerateRepos() }
-            }
-
-        case .ready(let repos):
-            if repos.isEmpty {
-                // Should not normally occur — enumerateRepos sets .error instead.
+            case .error(let message):
                 GitHubPRsErrorView(
-                    message: "No GitHub repositories found in the workspace.",
-                    onRetry: { Task { await widget.enumerateRepos() } }
+                    message: message,
+                    onRetry: { Task { await widget.enumerateRepos() } },
+                    onAdd: { widget.showingAddRepoForm = true }
                 )
-            } else {
-                GitHubPRsBrowserView(widget: widget, repos: repos)
+
+            case .ready(let repos):
+                if repos.isEmpty {
+                    GitHubPRsErrorView(
+                        message: "No GitHub repositories found in the workspace.",
+                        onRetry: { Task { await widget.enumerateRepos() } },
+                        onAdd: { widget.showingAddRepoForm = true }
+                    )
+                } else {
+                    GitHubPRsBrowserView(widget: widget, repos: repos)
+                }
             }
+        }
+        .sheet(isPresented: Binding(
+            get: { widget.showingAddRepoForm },
+            set: { widget.showingAddRepoForm = $0 }
+        )) {
+            GitHubPRsAddRepoSheet(widget: widget)
         }
     }
 }
@@ -449,6 +559,7 @@ private struct GitHubPRsLoadingView: View {
 private struct GitHubPRsErrorView: View {
     let message: String
     let onRetry: () -> Void
+    let onAdd: () -> Void
 
     var body: some View {
         VStack(spacing: DT.s16) {
@@ -464,8 +575,12 @@ private struct GitHubPRsErrorView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
 
-            Button("Retry", action: onRetry)
-                .buttonStyle(.bordered)
+            HStack(spacing: DT.s8) {
+                Button("Retry", action: onRetry)
+                    .buttonStyle(.bordered)
+                Button("Add repository", action: onAdd)
+                    .buttonStyle(.borderedProminent)
+            }
         }
         .padding(DT.s24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -495,8 +610,73 @@ private struct GitHubPRsBrowserView: View {
             configure: { [weak widget] model in
                 guard let widget else { return }
                 widget.syncTabs(to: model, repos: repos)
+                model.onNewTab = { [weak widget] in
+                    widget?.showingAddRepoForm = true
+                }
             }
         )
+    }
+}
+
+// MARK: - Add repository
+
+@MainActor
+private struct GitHubPRsAddRepoSheet: View {
+    let widget: GitHubPRsWidget
+
+    @State private var draft = ""
+    @State private var errorMessage: String? = nil
+    @State private var saving = false
+
+    var body: some View {
+        VStack(spacing: DT.s16) {
+            GitHubBrandMark(size: 28)
+
+            Text("Add GitHub repository")
+                .font(.system(size: DT.f14, weight: .semibold))
+
+            Text("Enter owner/repo or paste a github.com repository URL.")
+                .font(.system(size: DT.f12))
+                .foregroundStyle(.secondary)
+
+            TextField("owner/repo", text: $draft)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(addRepo)
+                .frame(width: 420)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: DT.f11))
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 400)
+            }
+
+            HStack(spacing: DT.s8) {
+                Button("Cancel") {
+                    widget.showingAddRepoForm = false
+                }
+                Button("Add repository", action: addRepo)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(saving || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(DT.s24)
+        .frame(minWidth: 480)
+    }
+
+    private func addRepo() {
+        guard !saving else { return }
+        saving = true
+        errorMessage = nil
+        Task { @MainActor in
+            defer { saving = false }
+            if let error = await widget.addManualRepo(draft) {
+                errorMessage = error
+            } else {
+                draft = ""
+            }
+        }
     }
 }
 
