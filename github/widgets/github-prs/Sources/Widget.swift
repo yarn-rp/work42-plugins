@@ -34,6 +34,7 @@
 //
 // WIDGET ID: "github-prs" (unchanged — the loader keyed this slug).
 
+import AppKit
 import Foundation
 import Observation
 import SwiftUI
@@ -158,6 +159,7 @@ final class GitHubPRsWidget: Work42Widget {
     let id = "github-prs"
     let title = "GitHub PRs"
     let icon = "arrow.triangle.pull"
+    var iconImageData: Data? { GitHubPRsReviewAgent.githubMarkPNG }
 
     /// Home-only: enumeration depends on workspace root being the shell's cwd.
     var enabledLayouts: Set<WidgetLayout> { [.home] }
@@ -177,6 +179,8 @@ final class GitHubPRsWidget: Work42Widget {
                 name: "start-code-review",
                 title: "Review GitHub PR",
                 icon: "arrow.triangle.pull",
+                iconImageData: GitHubPRsReviewAgent.githubMarkPNG,
+                brandColorHex: "#1F2328",
                 keywords: ["review", "code review", "pr", "pull request", "session"],
                 placement: [.palette, .actionArea],
                 actionAreaStyle: .labeled,
@@ -426,6 +430,7 @@ private struct GitHubPRsRootView: View {
 private struct GitHubPRsLoadingView: View {
     var body: some View {
         VStack(spacing: DT.s12) {
+            GitHubBrandMark(size: 28)
             ProgressView()
                 .controlSize(.regular)
             Text("Scanning workspace repositories…")
@@ -447,9 +452,7 @@ private struct GitHubPRsErrorView: View {
 
     var body: some View {
         VStack(spacing: DT.s16) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 28, weight: .light))
-                .foregroundStyle(DT.amber)
+            GitHubBrandMark(size: 32)
 
             Text("GitHub PRs unavailable")
                 .font(.system(size: DT.f13, weight: .medium))
@@ -494,6 +497,25 @@ private struct GitHubPRsBrowserView: View {
                 widget.syncTabs(to: model, repos: repos)
             }
         )
+    }
+}
+
+private struct GitHubBrandMark: View {
+    let size: CGFloat
+
+    @ViewBuilder
+    var body: some View {
+        if let data = GitHubPRsReviewAgent.githubMarkPNG,
+           let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+        } else {
+            Image(systemName: "arrow.triangle.pull")
+                .font(.system(size: size, weight: .light))
+                .foregroundStyle(DT.textTertiary)
+        }
     }
 }
 
