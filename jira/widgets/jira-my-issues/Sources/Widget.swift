@@ -614,7 +614,101 @@ public func work42_widget_main() -> UnsafeMutableRawPointer {
     return result
 }
 
-// PATH enrichment for the fail-soft `acli` session-name lookup. The app may be
-// launched from Finder with a minimal PATH that omits Homebrew/local dirs.
+// PATH enrichment for the fail-soft `acli` calls (session-name lookup and the
+// assigned-count agent). The app may be launched from Finder with a minimal
+// PATH that omits Homebrew/local dirs.
 private let jiraCLIPathPrefix =
     "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:/opt/local/bin\""
+
+// MARK: - JiraMyIssuesAgent (assigned-issue count header label)
+
+/// Background agent for the My Issues board: publishes a single "N assigned"
+/// header label — the count of OPEN Jira issues assigned to the authenticated
+/// `acli` user (`assignee = currentUser() AND resolution = Unresolved`). Mirrors
+/// the github-prs board's review-count agent. Fail-soft: any `acli` failure
+/// (missing / unauthenticated / nonzero exit / unparseable JSON) leaves
+/// `headerLabels` empty — no error chip, no crash. Hides at zero.
+@Observable
+@MainActor
+final class JiraMyIssuesAgent: WidgetBackgroundAgent {
+
+    /// The board's contributed header labels. Empty until a successful poll finds
+    /// N > 0. @Observable so the host re-renders the strip on change.
+    var headerLabels: [WidgetHeaderLabel] = []
+
+    private var watchTask: Task<Void, Never>?
+
+    func start(services: WidgetBackgroundServices) {
+        watchTask?.cancel()
+        watchTask = Task { @MainActor [weak self] in
+            // Brief initial delay so the board renders before the first acli spawn.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            while !Task.isCancelled {
+                await self?.poll(services: services)
+                try? await Task.sleep(nanoseconds: 120_000_000_000) // 2 minutes
+            }
+        }
+    }
+
+    func stop() {
+        watchTask?.cancel()
+        watchTask = nil
+        headerLabels = []
+    }
+
+    private func poll(services: WidgetBackgroundServices) async {
+        guard let count = await assignedCount(services: services), count > 0 else {
+            headerLabels = []
+            return
+        }
+        // Jira-branded chip; NO url so clicking focuses the widget (host-side)
+        // rather than opening a browser — same convention as the github-prs chip.
+        headerLabels = [
+            WidgetHeaderLabel(
+                text: "\(count) assigned",
+                iconImageData: jiraMarkPNG,
+                brandColorHex: "#0052CC",   // Jira blue
+                tint: .neutral
+            )
+        ]
+    }
+
+    /// Count of open issues assigned to the current user via `acli`. nil on any
+    /// failure (fail-soft — the caller then shows no chip). Prefers the response's
+    /// `total` when present (accurate beyond the page limit); otherwise counts the
+    /// returned results.
+    private func assignedCount(services: WidgetBackgroundServices) async -> Int? {
+        let cmd = "\(jiraCLIPathPrefix) && acli jira workitem search "
+            + "--jql 'assignee = currentUser() AND resolution = Unresolved' "
+            + "--fields key --limit 100 --json"
+        guard let result = try? await services.shell.run(command: cmd),
+              result.exitCode == 0,
+              let data = result.stdout.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data)
+        else { return nil }
+        return Self.resultCount(from: object)
+    }
+
+    /// Extract a result count from acli's search JSON across its possible shapes:
+    /// a top-level array, an object with a `total` int, or an object holding the
+    /// results under a common key (values/issues/results/…).
+    static func resultCount(from object: Any) -> Int? {
+        if let array = object as? [Any] { return array.count }
+        guard let dict = object as? [String: Any] else { return nil }
+        if let total = dict["total"] as? Int { return total }
+        for key in ["values", "issues", "workItems", "results", "items"] {
+            if let array = dict[key] as? [Any] { return array.count }
+        }
+        for value in dict.values where value is [Any] {
+            return (value as? [Any])?.count
+        }
+        return nil
+    }
+}
+
+extension JiraBoardWidget: Work42WidgetBackground {
+    /// Fresh agent per (session × widget) pair — the host owns the lifecycle.
+    func makeBackgroundAgent() -> any WidgetBackgroundAgent {
+        JiraMyIssuesAgent()
+    }
+}
