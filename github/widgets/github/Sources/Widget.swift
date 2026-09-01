@@ -1175,6 +1175,30 @@ private struct PRSelectionBubble: View {
     let services: SessionServices
 
     var body: some View {
+        // A persistent layer so the publish/clear onChange stays attached even
+        // when no selection is live. The bubble itself is an overlay.
+        Color.clear
+            .allowsHitTesting(false)
+            .onChange(of: widget.selectionText) { _, text in
+                // ALSO publish the selection for dictation-to-comment: holding
+                // push-to-talk now drops the transcript into the composer as a
+                // PR comment, the same append the dialog performs.
+                let services = services
+                let label = prSourceLabel(filePath: widget.selectionFilePath)
+                Task { @MainActor in
+                    if text.isEmpty {
+                        try? await services.composer.clearCommentableSelection()
+                    } else {
+                        try? await services.composer.presentCommentableSelection(
+                            sourceLabel: label, excerpt: text)
+                    }
+                }
+            }
+            .overlay(alignment: .topLeading) { bubbleContent }
+    }
+
+    @ViewBuilder
+    private var bubbleContent: some View {
         if !widget.selectionText.isEmpty {
             GeometryReader { proxy in
                 let rect = widget.selectionRect
