@@ -828,6 +828,11 @@ final class GitHubPRWidget: Work42Widget {
         // NOTE: startWatcher is NOT called here. The host background agent owns
         // the poll loop and calls GitHubBackgroundAgent.start(services:) separately.
         // This eliminates the double-polling bug described in AC10.
+        //
+        // The live tab-reconcile subscription is NOT started here either: it is
+        // driven by the view's `.task` (see PRWidgetMainView) so it runs only
+        // while the widget's tab is actually on screen — with an immediate check
+        // on appear — instead of polling in the background when unviewed.
     }
 
     func deactivate() {
@@ -863,6 +868,38 @@ final class GitHubPRWidget: Work42Widget {
             prs = []
         }
         syncTabs()
+    }
+
+    /// Re-read `github/prs` and, when it changed out-of-band (an agent, the CLI,
+    /// or `task42 storage set github/prs`), append the new tab(s) and focus the
+    /// newest — live, without a close/reopen. A no-op when the URL set is
+    /// unchanged, so the open tabs never thrash on the poll.
+    func refreshFromStorage() async {
+        guard let services else { return }
+        let latest: [PREntry]
+        do {
+            if let value = try await services.storage.get(namespace: "github", key: "prs") {
+                latest = PREntry.decode(from: value)
+            } else {
+                latest = []
+            }
+        } catch {
+            return  // storage briefly unavailable — keep the current tabs
+        }
+        let currentURLs = prs.map(\.url)
+        let latestURLs = latest.map(\.url)
+        guard currentURLs != latestURLs else { return }
+
+        // Only auto-focus when appending to an EXISTING tab set. On first
+        // population (empty → N, e.g. the immediate check on appear) let the tab
+        // bar pick its default rather than hijacking selection to the last entry.
+        let hadTabs = !currentURLs.isEmpty
+        let addedURLs = latestURLs.filter { !currentURLs.contains($0) }
+        prs = latest        // .onChange(displayedURLs) re-runs syncTabs()
+        syncTabs()          // ensure the new tab exists before we select it
+        if hadTabs, let newest = addedURLs.last {
+            browserModel?.selectTab(stableTabID(for: newest))
+        }
     }
 
     // MARK: - Tab sync
@@ -996,10 +1033,26 @@ private struct PRWidgetMainView: View {
     let services: SessionServices
 
     var body: some View {
-        if widget.displayedURLs.isEmpty {
-            PREmptyStateView(widget: widget, services: services)
-        } else {
-            PRBrowserView(widget: widget, services: services)
+        Group {
+            if widget.displayedURLs.isEmpty {
+                PREmptyStateView(widget: widget, services: services)
+            } else {
+                PRBrowserView(widget: widget, services: services)
+            }
+        }
+        // Live tab-reconcile, scoped to the view being on screen. `.task` runs
+        // when the widget's tab is navigated to / first rendered and is cancelled
+        // by SwiftUI when it leaves the screen — so we do an immediate check on
+        // appear, then subscribe (poll) for out-of-band `github/prs` changes only
+        // while visible. Runs in BOTH states so a first external attach flips the
+        // empty state to the browser live.
+        .task {
+            await widget.refreshFromStorage()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000) // 3s
+                if Task.isCancelled { break }
+                await widget.refreshFromStorage()
+            }
         }
     }
 }

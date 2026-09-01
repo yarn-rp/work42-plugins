@@ -182,6 +182,9 @@ final class JiraWidget: Work42Widget {
         Task { @MainActor [weak self] in
             await self?.loadAndSyncIssues()
         }
+        // The live tab-reconcile subscription is driven by the view's `.task`
+        // (see JiraWidgetMainView) so it runs only while the widget's tab is on
+        // screen — with an immediate check on appear — not in the background.
     }
 
     func deactivate() {
@@ -227,6 +230,38 @@ final class JiraWidget: Work42Widget {
             issues = []
         }
         syncTabs()
+    }
+
+    /// Re-read `jira/issues` and, when it changed out-of-band (an agent, the CLI,
+    /// or `task42 storage set jira/issues`), append the new tab(s) and focus the
+    /// newest — live, without a close/reopen. A no-op when the URL set is
+    /// unchanged, so open tabs never thrash on the poll. Unlike
+    /// `loadAndSyncIssues`, it skips legacy migration and the loading flag.
+    func refreshFromStorage() async {
+        guard let services else { return }
+        let latest: [JiraEntry]
+        do {
+            let issuesVal = try await services.storage.get(namespace: "jira", key: "issues")
+            let legacyURL = try? await services.storage.get(namespace: "jira", key: "url")
+            let legacyKey = try? await services.storage.get(namespace: "jira", key: "key")
+            latest = JiraEntry.resolve(issues: issuesVal, legacyURL: legacyURL ?? nil, legacyKey: legacyKey ?? nil)
+        } catch {
+            return  // storage briefly unavailable — keep the current tabs
+        }
+        let currentURLs = issues.map(\.url)
+        let latestURLs = latest.map(\.url)
+        guard currentURLs != latestURLs else { return }
+
+        // Only auto-focus when appending to an EXISTING tab set. On first
+        // population (empty → N, e.g. the immediate check on appear) let the tab
+        // bar pick its default rather than hijacking selection to the last entry.
+        let hadTabs = !currentURLs.isEmpty
+        let addedURLs = latestURLs.filter { !currentURLs.contains($0) }
+        issues = latest     // .onChange(displayedURLs) re-runs syncTabs()
+        syncTabs()          // ensure the new tab exists before we select it
+        if hadTabs, let newest = addedURLs.last {
+            browserModel?.selectTab(stableTabID(for: newest))
+        }
     }
 
     // MARK: - Tab sync
@@ -495,13 +530,29 @@ private struct JiraWidgetMainView: View {
     let services: SessionServices
 
     var body: some View {
-        if widget.isLoading {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if widget.displayedURLs.isEmpty {
-            JiraEmptyStateView(widget: widget, services: services)
-        } else {
-            JiraBrowserView(widget: widget, services: services)
+        Group {
+            if widget.isLoading {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if widget.displayedURLs.isEmpty {
+                JiraEmptyStateView(widget: widget, services: services)
+            } else {
+                JiraBrowserView(widget: widget, services: services)
+            }
+        }
+        // Live tab-reconcile, scoped to the view being on screen. `.task` runs
+        // when the widget's tab is navigated to / first rendered and is cancelled
+        // by SwiftUI when it leaves the screen — an immediate check on appear,
+        // then subscribe (poll) for out-of-band `jira/issues` changes only while
+        // visible. Runs in every state so a first external attach flips the empty
+        // state to the browser live.
+        .task {
+            await widget.refreshFromStorage()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000) // 3s
+                if Task.isCancelled { break }
+                await widget.refreshFromStorage()
+            }
         }
     }
 }
