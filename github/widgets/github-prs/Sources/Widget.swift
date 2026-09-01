@@ -245,7 +245,7 @@ final class GitHubPRsWidget: Work42Widget {
                         id: "session.open.codeReview",
                         params: [
                             "kind": .string("codeReview"),
-                            "name": .string("Code Review: \(prTitle)"),
+                            "name": .string("PR Review: \(prTitle)"),
                             "codeReview": .object([
                                 "branchesByRepository": .object([
                                     repoKey: .string(reviewRef),
