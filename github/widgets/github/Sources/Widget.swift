@@ -787,28 +787,19 @@ final class GitHubPRWidget: Work42Widget {
     /// Drives the attach-sheet presentation.
     var showingAttachForm: Bool = false
 
-    // MARK: - Selection state (drives the PR selection bubble + popover)
-
-    /// Text currently selected in the active PR WebView. Empty = no bubble shown.
-    var selectionText: String = ""
-    /// View-space bounding rect of the selection (from the JS coordinate transform
-    /// in `WebSectionView.selectionViewRect`). Used to position the + bubble.
-    var selectionRect: CGRect = .zero
-    /// The file path extracted from the GitHub diff DOM `data-path` for the current
-    /// selection. Non-nil when the selection is inside a diff file section; nil for
-    /// PR description / comment text outside the diff.
-    var selectionFilePath: String? = nil
-    /// Drives the `CommentComposerPopover` presentation over the + bubble.
-    var showingSelectionPopover: Bool = false
+    // Highlight-to-comment (the + bubble, the composer popover, and
+    // dictate-to-comment) is now owned by the SDK's `BrowserSurface`. This
+    // widget contributes only a `WebSelectionResolver` (see
+    // `makeGitHubSelectionResolver`) that turns a raw selection into a
+    // "PR #N · path:Lx–Ly" label. No selection state lives here anymore.
 
     // MARK: - Internal (not observed)
 
     private var services: SessionServices?
 
     /// The `BrowserWidgetModel` stored from the `configure:` closure of `BrowserSurface`.
-    /// The selection overlay reads `model.activeLiveView?()` to wire `selectionHandler`
-    /// on the current tab's `WebSectionLiveView` — without importing Work42App or
-    /// Patrol42Core. Set to nil on `deactivate()`.
+    /// Used by the open-link intent to select the matching tab. Set to nil on
+    /// `deactivate()`.
     var browserModel: BrowserWidgetModel?
 
     /// Stable UUID → URL mapping so tab close → detach works.
@@ -839,10 +830,6 @@ final class GitHubPRWidget: Work42Widget {
         // View-scoped teardown only — the background agent manages its own lifecycle.
         services = nil
         browserModel = nil
-        selectionText = ""
-        selectionRect = .zero
-        selectionFilePath = nil
-        showingSelectionPopover = false
         openedLinkURL = nil
         BrowserSurfaceCache.shared.teardown(key: id)
     }
@@ -1065,18 +1052,6 @@ private struct PRBrowserView: View {
     let widget: GitHubPRWidget
     let services: SessionServices
 
-    /// Computes a stable key that changes whenever the active live view's
-    /// identity changes — used as the `.task(id:)` key to re-wire the selection
-    /// handler when the model becomes available or when the user switches tabs.
-    private var selectionWireKey: String {
-        guard let model = widget.browserModel else { return "none" }
-        // Combine the model identity with the active tab id so the task re-runs
-        // when the model first appears OR when a tab switch happens.
-        let modelID = ObjectIdentifier(model).hashValue
-        let tabID = model.activeTabId?.uuidString ?? "notab"
-        return "\(modelID):\(tabID)"
-    }
-
     private var firstURL: URL {
         widget.displayedURLs.first ?? URL(string: "https://github.com")!
     }
@@ -1096,9 +1071,14 @@ private struct PRBrowserView: View {
                 icon: "arrow.triangle.pull"
             ),
             cacheKey: widget.id,
+            // The SDK owns the whole highlight-to-comment affordance (bubble,
+            // composer, dictate-to-comment). We supply ONLY the resolver that
+            // maps a raw PR-page selection into "PR #N · path:Lx–Ly".
+            services: services,
+            selectionResolver: makeGitHubSelectionResolver(services: services),
             configure: { [weak widget] model in
                 guard let widget else { return }
-                // Store the model so PRSelectionOverlay can reach the live view.
+                // Store the model so the open-link intent can select tabs.
                 widget.browserModel = model
                 // Sync all PR tabs (replace the seeded first tab from spec).
                 widget.syncTabs()
@@ -1122,189 +1102,60 @@ private struct PRBrowserView: View {
         )) {
             PRAttachSheet(widget: widget, services: services)
         }
-        // Selection bubble + composer citation.
-        // `selectionWireKey` reads `widget.browserModel?.activeTabId`, establishing
-        // @Observable tracking so the task re-runs when either changes (model
-        // becomes available, or the user switches tabs).
-        .task(id: selectionWireKey) {
-            // Clear any stale selection when the model changes or the tab switches
-            // so a stale bubble from the previous tab never lingers.
-            widget.selectionText = ""
-            widget.selectionRect = .zero
-            widget.selectionFilePath = nil
-            widget.showingSelectionPopover = false
-
-            guard let model = widget.browserModel else { return }
-            // A brief async yield lets BrowserSurfaceReady's .onAppear complete
-            // (which sets model.activeLiveView) before we try to read it.
-            // The task inherits PRBrowserView's @MainActor isolation, so we remain
-            // on the main actor throughout; the sleep just defers past the render cycle.
-            try? await Task.sleep(nanoseconds: 80_000_000) // 80 ms
-            guard !Task.isCancelled else { return }
-            guard let live = model.activeLiveView?() else { return }
-            // Wire: selection events → widget observable properties.
-            // The widget is an @Observable @MainActor class, so writing to its
-            // properties from this @MainActor closure is safe (no stale-capture risk).
-            live.selectionHandler = { [weak widget] text, rect, filePath in
-                widget?.selectionText = text
-                widget?.selectionRect = rect
-                widget?.selectionFilePath = filePath
-                if text.isEmpty { widget?.showingSelectionPopover = false }
-            }
-        }
-        .overlay(alignment: .topLeading) {
-            PRSelectionBubble(widget: widget, services: services)
-        }
     }
 }
 
-// MARK: - PRSelectionBubble
+// MARK: - GitHub selection resolver
 
-/// The + bubble overlay and `CommentComposerPopover` for PR text selection.
+/// The GitHub widget's entire contribution to highlight-to-comment: map a raw
+/// PR-page selection into a precise "PR #N · path:L12–L18" source label. The
+/// SDK's `BrowserSurface` owns the bubble, the composer popover, and
+/// dictate-to-comment; it calls this resolver ONCE (async) right before the
+/// comment reaches the composer, identically for a typed note and a dictated
+/// one. Returning `nil` (not a PR page) falls back to the SDK's plain
+/// page-title label.
 ///
-/// Appears over the BrowserSurface content area when the user selects text on
-/// the PR page. Clicking the bubble opens `CommentComposerPopover`; on commit
-/// the selection + user's note are attached to the chat composer via
-/// `services.composer.attach` with a 'PR #N · <file>' source label.
-///
-/// All selection state lives in `GitHubPRWidget` (an @Observable class), so
-/// writing from the `selectionHandler` closure is safe — no stale-capture risk.
+/// Precise-anchor resolution (unchanged from the old bespoke path): shell
+/// `gh pr diff <n> --repo owner/repo` via `services.shell` (cwd = the session
+/// worktree; the runner enriches PATH + GH_TOKEN) and match the selection
+/// against the unified diff with `PRDiffLocator` (a verbatim port of
+/// Patrol42Core.UnifiedDiffLocator — widgets can't link that module). Degrades
+/// in order: resolved anchor → DOM file hint (domContext.path) → PR number.
 @MainActor
-private struct PRSelectionBubble: View {
-    let widget: GitHubPRWidget
-    let services: SessionServices
-
-    var body: some View {
-        if !widget.selectionText.isEmpty {
-            GeometryReader { proxy in
-                let rect = widget.selectionRect
-                // Clamp the bubble to inside the widget bounds.
-                let bx = min(max(rect.midX + 12, 12), max(proxy.size.width - 12, 12))
-                let by = min(max(rect.minY - 8, 8), max(proxy.size.height - 8, 8))
-                let anchor = UnitPoint(
-                    x: min(max(bx / max(proxy.size.width, 1), 0), 1),
-                    y: min(max(by / max(proxy.size.height, 1), 0), 1)
-                )
-                ZStack {
-                    // Invisible full-bleed layer carries the popover so
-                    // `attachmentAnchor` updates correctly when the rect changes.
-                    Color.clear
-                        .allowsHitTesting(false)
-                        .popover(
-                            isPresented: Binding(
-                                get: { widget.showingSelectionPopover },
-                                set: { widget.showingSelectionPopover = $0 }
-                            ),
-                            attachmentAnchor: .point(anchor),
-                            arrowEdge: .leading
-                        ) {
-                            CommentComposerPopover(
-                                sourceLabel: prSourceLabel(filePath: widget.selectionFilePath),
-                                excerpt: widget.selectionText,
-                                onCommit: { body in
-                                    commitComment(body: body)
-                                },
-                                isPresented: Binding(
-                                    get: { widget.showingSelectionPopover },
-                                    set: { widget.showingSelectionPopover = $0 }
-                                )
-                            )
-                        }
-                    Button {
-                        widget.showingSelectionPopover = true
-                    } label: {
-                        Image(systemName: "plus.bubble.fill")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(DT.systemAccent)
-                            .frame(width: 18, height: 16)
-                            .background(
-                                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                    .fill(DT.systemAccent.opacity(0.18))
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .position(x: bx, y: by)
-                    .help("Attach selection to composer")
-                }
-            }
+func makeGitHubSelectionResolver(services: SessionServices) -> WebSelectionResolver {
+    { selection in
+        guard let urlString = selection.pageURL?.absoluteString,
+              let ref = parseGitHubPRRef(urlString) else {
+            // Not a GitHub PR page — let the SDK use its plain label.
+            return nil
         }
-    }
+        // GitHub's diff DOM annotates rows with `data-path` / `data-tagsearch-path`,
+        // which the SDK's generic scraper delivers as domContext.path / .tagsearch-path.
+        let fileHint = selection.domContext["path"] ?? selection.domContext["tagsearch-path"]
 
-    // MARK: - Source label
+        // Try the precise anchor first.
+        // `--repo owner/repo` — the session cwd is the multi-repo CONTAINER
+        // (not a git repo), so gh cannot infer the repo from the working
+        // directory; a bare `gh pr diff <n>` fails there.
+        if let result = try? await services.shell.run(
+               command: "\(enrichedPathPrefix) && gh pr diff \(ref.number) --repo \(ref.owner)/\(ref.repo)"
+           ),
+           result.exitCode == 0,
+           let anchor = PRDiffLocator.locate(
+               patch: result.stdout, fileHint: fileHint, selection: selection.text
+           ) {
+            let lines = anchor.startLine == anchor.endLine
+                ? "L\(anchor.startLine)"
+                : "L\(anchor.startLine)–L\(anchor.endLine)"
+            return ResolvedAnnotation(sourceLabel: "PR #\(ref.number) · \(anchor.filePath):\(lines)")
+        }
 
-    /// Human-readable label for the composer popover header.
-    /// Degrades gracefully: "PR #N · Bar.swift" when both are available,
-    /// "PR #N" with number but no file hint, "GitHub PR" as last resort.
-    private func prSourceLabel(filePath: String?) -> String {
-        let activeTabURL = widget.browserModel?.tabs
-            .first(where: { $0.id == widget.browserModel?.activeTabId })?.url?.absoluteString
-            ?? widget.browserModel?.tabs.first?.url?.absoluteString
-        let ref = activeTabURL.flatMap { parseGitHubPRRef($0) }
-        guard let ref else { return "GitHub PR" }
-        if let hint = filePath, !hint.isEmpty {
+        // Degrade: DOM file hint → bare PR number.
+        if let hint = fileHint, !hint.isEmpty {
             let filename = (hint as NSString).lastPathComponent
-            return "PR #\(ref.number) · \(filename)"
+            return ResolvedAnnotation(sourceLabel: "PR #\(ref.number) · \(filename)")
         }
-        return "PR #\(ref.number)"
-    }
-
-    // MARK: - Commit
-
-    /// Attach the selection to the chat composer as a pending-comment citation,
-    /// resolving the precise diff anchor first (Yan: "resolve the file and the
-    /// lines" — the old built-in did this and the port must not lose it).
-    ///
-    /// Resolution: shell `gh pr diff <n>` via `services.shell` (cwd = the
-    /// session worktree; the runner enriches PATH + GH_TOKEN) and match the
-    /// selection against the unified diff with `PRDiffLocator` (a verbatim
-    /// port of Patrol42Core.UnifiedDiffLocator — widgets can't link that
-    /// module). The label becomes "PR #N · path/File.swift:L12–L18".
-    /// Degrades in order: resolved anchor → DOM file hint → PR number →
-    /// "GitHub PR". The attach happens after resolution (the SDK attach has
-    /// no update-anchor path); the shell's own timeout bounds the wait.
-    private func commitComment(body: String) {
-        let text = widget.selectionText
-        let fileHint = widget.selectionFilePath
-        let fallbackLabel = prSourceLabel(filePath: fileHint)
-        let ref = activePRRef()
-        // Clear selection state immediately for responsiveness.
-        widget.selectionText = ""
-        widget.selectionRect = .zero
-        widget.selectionFilePath = nil
-        let services = services
-        Task { @MainActor in
-            var label = fallbackLabel
-            // `--repo owner/repo` — the session cwd is the multi-repo patrol
-            // CONTAINER (not a git repo), so gh cannot infer the repo from
-            // the working directory; a bare `gh pr diff <n>` fails there.
-            if let ref,
-               let result = try? await services.shell.run(
-                   command: "\(enrichedPathPrefix) && gh pr diff \(ref.number) --repo \(ref.owner)/\(ref.repo)"
-               ),
-               result.exitCode == 0,
-               let anchor = PRDiffLocator.locate(
-                   patch: result.stdout, fileHint: fileHint, selection: text
-               ) {
-                let lines = anchor.startLine == anchor.endLine
-                    ? "L\(anchor.startLine)"
-                    : "L\(anchor.startLine)–L\(anchor.endLine)"
-                label = "PR #\(ref.number) · \(anchor.filePath):\(lines)"
-            }
-            try? await services.composer.attach(
-                sourceLabel: label,
-                excerpt: text,
-                body: body
-            )
-        }
-    }
-
-    /// The `PRRef` of the ACTIVE browser tab (fallback: first tab).
-    private func activePRRef() -> PRRef? {
-        let activeTabURL = widget.browserModel?.tabs
-            .first(where: { $0.id == widget.browserModel?.activeTabId })?.url?.absoluteString
-            ?? widget.browserModel?.tabs.first?.url?.absoluteString
-        return activeTabURL.flatMap { parseGitHubPRRef($0) }
+        return ResolvedAnnotation(sourceLabel: "PR #\(ref.number)")
     }
 }
 
