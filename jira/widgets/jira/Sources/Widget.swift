@@ -380,6 +380,11 @@ final class JiraBackgroundAgent: WidgetBackgroundAgent {
     /// The running refresh loop. nil when stopped.
     private var watchTask: Task<Void, Never>?
 
+    /// Guards the "acli isn't installed" system event so it's shelled at most
+    /// once per session (the `task42 event` fingerprint also dedups at the DB
+    /// level; this avoids re-shelling it every 60s poll).
+    private var reportedMissingAcli = false
+
     func start(services: WidgetBackgroundServices) {
         watchTask?.cancel()
         watchTask = Task { @MainActor [weak self] in
@@ -459,12 +464,55 @@ final class JiraBackgroundAgent: WidgetBackgroundAgent {
     ) async -> JiraCLIState? {
         let command = "\(jiraCLIPathPrefix) && acli jira workitem view \(key) "
             + "--fields status,labels --json"
-        guard let result = try? await services.shell.run(command: command),
-              result.exitCode == 0,
+        guard let result = try? await services.shell.run(command: command) else { return nil }
+        // Exit 127 = command-not-found: `acli` isn't installed. Tell the session
+        // once (fail-soft — chips stay key-only) so the agent can offer to set it
+        // up. Other non-zero exits (e.g. not authenticated) are left silent here.
+        if result.exitCode == 127 {
+            await reportMissingAcliIfNeeded(services: services)
+            return nil
+        }
+        guard result.exitCode == 0,
               let data = result.stdout.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return JiraCLIState(json: object)
+    }
+
+    /// Deliver a one-time `[system event]` telling the session `acli` is missing,
+    /// with the install/auth steps. Guarded so it fires at most once per session.
+    private func reportMissingAcliIfNeeded(services: WidgetBackgroundServices) async {
+        guard !reportedMissingAcli else { return }
+        reportedMissingAcli = true
+        let message =
+            "The Jira CLI (acli) isn't installed, so the Jira widget can't enrich "
+            + "issue chips with status/labels or auto-name sessions from the issue "
+            + "summary. Install it with: brew tap atlassian/homebrew-acli && brew "
+            + "install acli, then authenticate: acli jira auth login --web. See the "
+            + "using-jira-cli skill for details."
+        await deliverEvent(services: services, message: message, fingerprint: "jira/acli-missing")
+    }
+
+    /// Post a `[system event]` into the current session via the task42/patrol42
+    /// CLI (mirrors the github widget's delivery). The `if [ -n … ]` guard skips
+    /// silently on Home/plain surfaces that have no task/patrol id.
+    private func deliverEvent(
+        services: WidgetBackgroundServices,
+        message: String,
+        fingerprint: String
+    ) async {
+        // Escape single quotes for safe sh single-quote embedding.
+        let safeMsg = message.components(separatedBy: "'").joined(separator: "'\"'\"'")
+        let safeFP = fingerprint.components(separatedBy: "'").joined(separator: "'\"'\"'")
+        let cmd = """
+            \(jiraCLIPathPrefix)
+            if [ -n "$WORK42_TASK_ID" ]; then
+              task42 event "$WORK42_TASK_ID" '\(safeMsg)' --fingerprint '\(safeFP)'
+            elif [ -n "$WORK42_PATROL_ID" ]; then
+              patrol42 event "$WORK42_PATROL_ID" '\(safeMsg)' --fingerprint '\(safeFP)'
+            fi
+            """
+        _ = try? await services.shell.run(command: cmd)
     }
 
     private func statusTint(_ status: String) -> WidgetHeaderLabelTint {
