@@ -3,12 +3,12 @@ name: widget-github
 description: |
   How to use the GitHub PR widget (session tab kindId widget:github).
   This widget renders one browser tab per PR attached to the current session
-  (task or patrol) and runs a background watch loop. It reads and writes the
+  (task or code-review) and runs a background watch loop. It reads and writes the
   session's storage namespace: github/prs (JSON array of {url, status,
   merged_at}). Use `task42 storage set <id> github/prs '<json>'` on a task,
-  or `patrol42 storage set <id> github/prs '<json>'` on a patrol, to attach
+  to attach
   PRs without the widget open. The widget delivers PR activity as
-  `[system event]`s via `task42 event` / `patrol42 event`. The widget is
+  `[system event]`s via `task42 event`. The widget is
   installed by default; the user can opt out via the My Widgets settings
   panel.
 ---
@@ -28,7 +28,7 @@ The `github` pre-built widget is a BrowserSurface-based multi-tab view that:
   `BrowserSurfaceCache` teardown only; it refreshes its PR tabs from storage on
   each `activate` call (`loadAndSyncPRs`).
 - Delivers new PR activity as fingerprinted `[system event]`s via `task42 event`
-  (task sessions) or `patrol42 event` (patrol sessions).
+  (task / code-review sessions).
 - Provides an **empty-state form** for paste-URL attach and a **+ button** for
   subsequent attaches when one or more tabs are already open.
 - Updates `status` and `merged_at` fields in `github/prs` automatically when a
@@ -73,20 +73,10 @@ task42 storage get <task-id> github/prs | jq '[.[] | select(.status != "merged")
 # Must be 0 for a clean Done transition
 ```
 
-### On a patrol (code-review) session
-
-Identical convention, `patrol42 storage` instead of `task42 storage`:
-
-```bash
-patrol42 storage get <patrol-id> github/prs
-patrol42 storage set <patrol-id> github/prs \
-  '[{"url":"https://github.com/owner/repo/pull/42","status":"open","merged_at":null}]'
-```
-
 ## Events delivered
 
 The widget delivers the following `[system event]`s via `task42 event` (task
-sessions) or `patrol42 event` (patrol sessions) — same fingerprint scheme,
+sessions) — same fingerprint scheme,
 same dedup ledger, whichever session kind the widget is hosted in. Every
 event carries a **fingerprint** so `pending_updates` deduplicates repeat
 deliveries automatically — even across widget restarts.

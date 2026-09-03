@@ -493,9 +493,9 @@ final class JiraBackgroundAgent: WidgetBackgroundAgent {
         await deliverEvent(services: services, message: message, fingerprint: "jira/acli-missing")
     }
 
-    /// Post a `[system event]` into the current session via the task42/patrol42
+    /// Post a `[system event]` into the current session via the task42
     /// CLI (mirrors the github widget's delivery). The `if [ -n … ]` guard skips
-    /// silently on Home/plain surfaces that have no task/patrol id.
+    /// silently on Home/plain surfaces that have no task id.
     private func deliverEvent(
         services: WidgetBackgroundServices,
         message: String,
@@ -508,8 +508,6 @@ final class JiraBackgroundAgent: WidgetBackgroundAgent {
             \(jiraCLIPathPrefix)
             if [ -n "$WORK42_TASK_ID" ]; then
               task42 event "$WORK42_TASK_ID" '\(safeMsg)' --fingerprint '\(safeFP)'
-            elif [ -n "$WORK42_PATROL_ID" ]; then
-              patrol42 event "$WORK42_PATROL_ID" '\(safeMsg)' --fingerprint '\(safeFP)'
             fi
             """
         _ = try? await services.shell.run(command: cmd)

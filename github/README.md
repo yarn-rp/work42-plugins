@@ -37,7 +37,7 @@ hand-edit or commit them.
   tab without attaching a PR or changing `github/prs`; URL routes, queries,
   and fragments are preserved.
 - Background poll loop (60 s) delivers PR activity as fingerprinted
-  `[system event]`s via `task42 event` / `patrol42 event`.
+  `[system event]`s via `task42 event`.
 - Text-selection bubble for attaching quoted PR content to the chat composer,
   with diff-anchor resolution via `gh pr diff`.
 
