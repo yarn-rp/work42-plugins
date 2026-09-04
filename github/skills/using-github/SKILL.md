@@ -115,16 +115,10 @@ task42 storage get <task-id> github/prs
 task42 storage set <task-id> github/prs \
   '[{"url":"https://github.com/owner/repo/pull/42","status":"open","merged_at":null}]'
 
-# On a patrol session
-patrol42 storage get <patrol-id> github/prs
-patrol42 storage set <patrol-id> github/prs \
-  '[{"url":"https://github.com/owner/repo/pull/42","status":"open","merged_at":null}]'
-```
-
 ## [system event] delivery
 
 The `github` widget delivers PR activity as `[system event]`s using
-`task42 event` (task sessions) or `patrol42 event` (patrol sessions). Each
+`task42 event` (task / code-review sessions). Each
 event carries a fingerprint so `pending_updates` deduplicates repeat deliveries
 automatically — even across widget restarts and app relaunches.
 

@@ -433,7 +433,7 @@ private let enrichedPathPrefix = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/loc
 /// - The 60-second poll loop (`startWatcher` / `poll`)
 /// - `lastSeen` / `seededFingerprints` per-session state
 /// - `github/prs` status/merged_at writes via `services.storage`
-/// - `[system event]` delivery via `task42 event` / `patrol42 event`
+/// - `[system event]` delivery via `task42 event`
 /// - Header label computation and storage (`headerLabels` — @Observable-backed
 ///   so the host's header-strip render pass registers a dependency)
 ///
@@ -705,25 +705,20 @@ final class GitHubBackgroundAgent: WidgetBackgroundAgent {
 
     /// Deliver one event via the session's event command.
     ///
-    /// - Task sessions: `task42 event "$WORK42_TASK_ID" '<msg>' --fingerprint '<fp>'`
-    ///   (WORK42_TASK_ID is set by the shell context for task sessions).
-    /// - Patrol sessions: `patrol42 event "$WORK42_PATROL_ID" '<msg>' --fingerprint '<fp>'`
-    ///   (WORK42_PATROL_ID is set by the shell context for patrol sessions).
+    /// - Task / code-review sessions: `task42 event "$WORK42_TASK_ID" '<msg>' --fingerprint '<fp>'`
+    ///   (WORK42_TASK_ID is set by the shell context).
     ///
-    /// When neither env var is set (Home surface or plain session), the command
-    /// is skipped. Non-zero exit is logged but never crashes the watcher.
+    /// When the env var is unset (Home surface or plain session), the command is
+    /// skipped. Non-zero exit is logged but never crashes the watcher.
     private func deliverEvent(services: WidgetBackgroundServices, message: String, fingerprint: String) async {
         // Escape the message for sh single-quote embedding.
         let safeMsgParts = message.components(separatedBy: "'").joined(separator: "'\"'\"'")
         let safeFP = fingerprint.replacingOccurrences(of: "'", with: "'\"'\"'")
-        // Dispatch to the right CLI based on which env var is set.
         // The `if [ -n ... ]` guard skips silently on Home/plain surfaces.
         let cmd = """
             \(enrichedPathPrefix)
             if [ -n "$WORK42_TASK_ID" ]; then
               task42 event "$WORK42_TASK_ID" '\(safeMsgParts)' --fingerprint '\(safeFP)'
-            elif [ -n "$WORK42_PATROL_ID" ]; then
-              patrol42 event "$WORK42_PATROL_ID" '\(safeMsgParts)' --fingerprint '\(safeFP)'
             fi
             """
         _ = try? await services.shell.run(command: cmd)
@@ -1119,7 +1114,7 @@ private struct PRBrowserView: View {
 /// `gh pr diff <n> --repo owner/repo` via `services.shell` (cwd = the session
 /// worktree; the runner enriches PATH + GH_TOKEN) and match the selection
 /// against the unified diff with `PRDiffLocator` (a verbatim port of
-/// Patrol42Core.UnifiedDiffLocator — widgets can't link that module). Degrades
+/// the diff-location primitive). Degrades
 /// in order: resolved anchor → DOM file hint (domContext.path) → PR number.
 @MainActor
 func makeGitHubSelectionResolver(services: SessionServices) -> WebSelectionResolver {
@@ -1332,11 +1327,11 @@ public func work42_widget_main() -> UnsafeMutableRawPointer {
 }
 
 
-// MARK: - PRDiffLocator (ported from Patrol42Core.UnifiedDiffLocator)
+// MARK: - PRDiffLocator
 //
-// Verbatim port of `Patrol42Core.UnifiedDiffLocator` — widget dylibs link only
+// Self-contained diff-location primitive — widget dylibs link only
 // Work42UI + Work42WidgetKit, so the pure locator algorithm is duplicated here.
-// If the Patrol42Core original changes its match/ambiguity contract, keep this
+// A small, stable match/ambiguity contract; keep this
 // copy in sync. Contract summary: parse the unified diff file-by-file and
 // hunk-by-hunk; match the whitespace-trimmed selection lines as a contiguous
 // run; report new-side numbers for added runs, old-side for removed, new-side
@@ -1478,7 +1473,7 @@ private nonisolated enum PRDiffLocator {
     /// line (suffix match) and the LAST a clipped head (prefix match). Middle
     /// lines must match exactly. Single-line selections use containment when
     /// long enough to be unambiguous (>= 8 chars), exact equality otherwise.
-    /// (Divergence from the Patrol42Core original, which required exact lines —
+    /// (This is more lenient than an exact-line match —
     /// real selections kept failing on clipped edges.)
     private static func lineMatches(
         _ diffLine: String, _ selLine: String, index j: Int, count n: Int

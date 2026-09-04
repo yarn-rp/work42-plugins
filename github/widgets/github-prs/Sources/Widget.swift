@@ -226,20 +226,29 @@ final class GitHubPRsWidget: Work42Widget {
                             suggestion: "Review sessions require an auto-discovered workspace repository."
                         )
                     }
-                    // GitHub exposes every PR head through this stable ref,
-                    // including PRs opened from forks. The host treats it as
-                    // opaque git data and fetches/checks it out inside the
-                    // normal session-creation overlay.
-                    let reviewRef = "refs/pull/\(reference.number)/head"
-                    // Fail-soft title lookup: a nicer session name when `gh`
-                    // answers, "PR #N" when it doesn't. Never blocks launch.
+                    // Review the PR by its HEAD BRANCH NAME so the local review
+                    // branch tracks `origin/<branch>` — a normal git fetch keeps
+                    // it fresh and Pull fast-forwards it (the row shows "behind"
+                    // when the PR advances, never a bogus "merge conflicts").
+                    // Fork PRs (whose head branch isn't on this origin) fall back
+                    // to the stable `refs/pull/<N>/head` ref (checked out detached).
+                    var reviewRef = "refs/pull/\(reference.number)/head"
                     var prTitle = "PR #\(reference.number)"
                     if let result = try? await svc.shell.run(command:
                         "\(ghReviewPathPrefix) && gh pr view \(reference.number) "
-                        + "--repo \(reference.ownerRepo) --json title --jq .title"
-                    ), result.exitCode == 0 {
-                        let title = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !title.isEmpty { prTitle = title }
+                        + "--repo \(reference.ownerRepo) --json title,headRefName,isCrossRepository"
+                    ), result.exitCode == 0,
+                       let data = result.stdout.data(using: .utf8),
+                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        if let title = (obj["title"] as? String)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                            prTitle = title
+                        }
+                        let isFork = (obj["isCrossRepository"] as? Bool) ?? false
+                        if !isFork, let head = (obj["headRefName"] as? String)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines), !head.isEmpty {
+                            reviewRef = head
+                        }
                     }
                     try await svc.intents.execute(
                         id: "session.open.codeReview",

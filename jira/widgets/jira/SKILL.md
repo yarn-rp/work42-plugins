@@ -3,10 +3,9 @@ name: widget-jira
 description: |
   How to use the Jira widget (session tab kindId widget:jira).
   This widget shows the Jira issue linked to the current session (task or
-  patrol). It reads and writes the session's storage namespace: jira/url
+  code review). It reads and writes the session's storage namespace: jira/url
   (full issue URL), jira/key (e.g. "PROJ-123"). Use
-  `task42 storage set <id> jira/url "<url>"` on a task, or
-  `patrol42 storage set <id> jira/url "<url>"` on a patrol, to attach a Jira
+  `task42 storage set <id> jira/url "<url>"` on a task, to attach a Jira
   issue without the widget open. The widget is installed by default; the
   user can opt out via the My Widgets settings panel.
 ---
@@ -42,15 +41,6 @@ task42 storage get <task-id> jira/key
 # Clear the ticket (returns widget to paste-URL form)
 task42 storage delete <task-id> jira/url
 task42 storage delete <task-id> jira/key
-```
-
-### On a patrol (code-review) session
-
-Identical convention, `patrol42 storage` instead of `task42 storage`:
-
-```bash
-patrol42 storage set <patrol-id> jira/url '"https://myorg.atlassian.net/browse/PROJ-123"'
-patrol42 storage get <patrol-id> jira/key
 ```
 
 ## URL shapes supported
