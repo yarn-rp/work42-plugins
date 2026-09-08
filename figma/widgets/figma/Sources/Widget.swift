@@ -521,82 +521,59 @@ private struct FigmaAttachSheet: View {
 // MARK: - Figma brand mark
 
 extension FigmaWidget {
-    /// The Figma logo rendered to PNG once, for `iconImageData` (menu/header).
-    @MainActor static let brandPNG: Data? = renderBrandPNG(size: 64)
-
-    /// Draw the Figma logo — five shapes on a 38×57 grid (unit r = 9.5): three
-    /// left-column half-pills (red rounded-left, purple rounded-left) + salmon
-    /// rounded-right top, plus the blue (mid-right) and green (bottom-left) full
-    /// circles — into an NSImage and return PNG data.
-    @MainActor static func renderBrandPNG(size: CGFloat) -> Data? {
-        let image = NSImage(size: NSSize(width: size, height: size))
-        image.lockFocus()
-        defer { image.unlockFocus() }
-
-        let pad = size * 0.14
-        let s = min((size - 2 * pad) / 38.0, (size - 2 * pad) / 57.0)
-        let ox = (size - 38 * s) / 2
-        let oy = (size - 57 * s) / 2
-        let r = 9.5 * s
-        // SVG (y-down, top=0) → NSImage (y-up).
-        func pt(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: ox + x * s, y: oy + (57 - y) * s) }
-
-        let red    = NSColor(srgbRed: 0.949, green: 0.306, blue: 0.118, alpha: 1) // F24E1E
-        let salmon = NSColor(srgbRed: 1.000, green: 0.447, blue: 0.384, alpha: 1) // FF7262
-        let purple = NSColor(srgbRed: 0.635, green: 0.349, blue: 1.000, alpha: 1) // A259FF
-        let blue   = NSColor(srgbRed: 0.102, green: 0.737, blue: 0.996, alpha: 1) // 1ABCFE
-        let green  = NSColor(srgbRed: 0.039, green: 0.812, blue: 0.514, alpha: 1) // 0ACF83
-
-        // Half-pill rounded on the LEFT of a 19×19 SVG cell at (x0, yTop).
-        func leftPill(x0: CGFloat, yTop: CGFloat) -> NSBezierPath {
-            let p = NSBezierPath()
-            p.move(to: pt(x0 + 19, yTop + 19))         // bottom-right
-            p.line(to: pt(x0 + 19, yTop))              // top-right
-            p.line(to: pt(x0 + 9.5, yTop))             // top of semicircle
-            p.appendArc(withCenter: pt(x0 + 9.5, yTop + 9.5), radius: r,
-                        startAngle: 90, endAngle: 270, clockwise: false)  // left bulge
-            p.close()
-            return p
-        }
-        // Half-pill rounded on the RIGHT of a 19×19 SVG cell at (x0, yTop).
-        func rightPill(x0: CGFloat, yTop: CGFloat) -> NSBezierPath {
-            let p = NSBezierPath()
-            p.move(to: pt(x0, yTop + 19))              // bottom-left
-            p.line(to: pt(x0, yTop))                   // top-left
-            p.line(to: pt(x0 + 9.5, yTop))             // top of semicircle
-            p.appendArc(withCenter: pt(x0 + 9.5, yTop + 9.5), radius: r,
-                        startAngle: 90, endAngle: 270, clockwise: true)   // right bulge
-            p.close()
-            return p
-        }
-        func circle(x0: CGFloat, yTop: CGFloat) -> NSBezierPath {
-            NSBezierPath(ovalIn: NSRect(origin: pt(x0, yTop + 19), size: NSSize(width: 19 * s, height: 19 * s)))
-        }
-
-        red.setFill();    leftPill(x0: 0, yTop: 0).fill()
-        salmon.setFill(); rightPill(x0: 19, yTop: 0).fill()
-        purple.setFill(); leftPill(x0: 0, yTop: 19).fill()
-        blue.setFill();   circle(x0: 19, yTop: 19).fill()
-        green.setFill();  circle(x0: 0, yTop: 38).fill()
-
-        guard let tiff = image.tiffRepresentation,
+    /// The Figma logo rendered to PNG once (for `iconImageData` — the small
+    /// menu/header glyph). Rendered from the SwiftUI `FigmaBrandMark` via
+    /// `ImageRenderer` (reliable on the main actor), best-effort: nil falls back
+    /// to the SF Symbol `icon`. The visible in-widget mark uses the SwiftUI view
+    /// directly, so it never depends on this.
+    @MainActor static let brandPNG: Data? = {
+        let renderer = ImageRenderer(content: FigmaBrandMark(size: 64))
+        renderer.scale = 2
+        guard let image = renderer.nsImage,
+              let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff) else { return nil }
         return rep.representation(using: .png, properties: [:])
-    }
+    }()
 }
 
-/// The Figma brand mark as a SwiftUI view (renders the shared PNG; falls back to
-/// a neutral glyph if rendering ever fails).
-private struct FigmaBrandMark: View {
+/// The Figma logo, drawn with SwiftUI shapes (no NSImage/PNG, so it renders
+/// reliably inside the hot-loaded widget). Five shapes on the official 38×57
+/// grid (unit r = 9.5): red + purple left-column half-pills, salmon rounded-
+/// right (top), and the blue (mid-right) + green (bottom-left) full circles.
+/// Each half-pill is a circle unioned with a rectangle (no arc math).
+struct FigmaBrandMark: View {
     let size: CGFloat
+
+    // Brand colors.
+    private static let red    = Color(red: 0.949, green: 0.306, blue: 0.118)  // F24E1E
+    private static let salmon = Color(red: 1.000, green: 0.447, blue: 0.384)  // FF7262
+    private static let purple = Color(red: 0.635, green: 0.349, blue: 1.000)  // A259FF
+    private static let blue   = Color(red: 0.102, green: 0.737, blue: 0.996)  // 1ABCFE
+    private static let green  = Color(red: 0.039, green: 0.812, blue: 0.514)  // 0ACF83
+
     var body: some View {
-        if let data = FigmaWidget.brandPNG, let image = NSImage(data: data) {
-            Image(nsImage: image).resizable().scaledToFit().frame(width: size, height: size)
-        } else {
-            Image(systemName: "square.on.square.dashed")
-                .font(.system(size: size, weight: .light))
-                .foregroundStyle(DT.textTertiary)
+        Canvas { ctx, canvasSize in
+            let s = min(canvasSize.width / 38.0, canvasSize.height / 57.0)
+            let ox = (canvasSize.width - 38 * s) / 2
+            let oy = (canvasSize.height - 57 * s) / 2
+            // SwiftUI is y-down like the SVG grid — direct map, no flip.
+            func rect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> Path {
+                Path(CGRect(x: ox + x * s, y: oy + y * s, width: w * s, height: h * s))
+            }
+            func circle(_ cx: CGFloat, _ cy: CGFloat) -> Path {
+                Path(ellipseIn: CGRect(x: ox + (cx - 9.5) * s, y: oy + (cy - 9.5) * s,
+                                       width: 19 * s, height: 19 * s))
+            }
+            // A half-pill = circle (rounded end) unioned with the flat rectangle.
+            func pill(_ a: Path, _ b: Path) -> Path { var p = a; p.addPath(b); return p }
+
+            ctx.fill(pill(circle(9.5, 9.5),  rect(9.5, 0, 9.5, 19)), with: .color(Self.red))     // red, top-left (round left)
+            ctx.fill(pill(circle(28.5, 9.5), rect(19, 0, 9.5, 19)),  with: .color(Self.salmon))  // salmon, top-right (round right)
+            ctx.fill(pill(circle(9.5, 28.5), rect(9.5, 19, 9.5, 19)), with: .color(Self.purple)) // purple, mid-left (round left)
+            ctx.fill(circle(28.5, 28.5), with: .color(Self.blue))                                // blue, mid-right (full)
+            ctx.fill(circle(9.5, 47.5),  with: .color(Self.green))                               // green, bottom-left (full)
         }
+        .frame(width: size, height: size * 57 / 38)   // logo is taller than wide (2:3)
     }
 }
 
