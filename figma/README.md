@@ -1,7 +1,8 @@
 # figma — Work42 plugin
 
-Figma integration for Work42: a **file browser widget** plus a declared **Figma
-Dev Mode MCP**, wired through the work42 skill + MCP registry.
+Figma integration for Work42: a **file browser widget** plus a **using-figma
+skill**, wired through the work42 skill registry. work42 injects **no** Figma
+MCP — design-data access is the host agent's own Figma connector.
 
 ## What's inside
 
@@ -10,16 +11,16 @@ Dev Mode MCP**, wired through the work42 skill + MCP registry.
   attaches another file, a tab's `×` detaches. Shares the `"browser"` cookie jar,
   so one Figma sign-in persists across all browser-based widgets. Stores the
   attached files as a JSON array at storage `figma/links` (`{url, name}`).
-- **Figma Dev Mode MCP** (declared in `plugin.yaml`) — `http://127.0.0.1:3845/mcp`,
-  bridged to stdio via `npx mcp-remote`. The work42 registry injects it into
-  **task** and **code-review** sessions where the `figma` widget is active, and
-  pre-approves `mcp__figma__*`. Runs inside the Figma desktop app (enable it in
-  Figma → Preferences → "Enable Dev Mode MCP Server"; needs a Dev/Full seat) —
-  no OAuth, no token, no widget auth. The remote `https://mcp.figma.com/mcp`
-  server is not used: it only accepts clients on Figma's approved MCP Catalog
-  (allowlist).
-- **`skills/using-figma`** — how the agent reads `figma/links` and queries the
-  Figma MCP for design data.
+- **No work42-injected Figma MCP.** Figma's MCP server is restricted to clients
+  on Figma's approved **MCP Catalog** (an allowlist), so a work42-bridged client
+  is rejected (`https://mcp.figma.com/mcp` → 403 on dynamic client registration).
+  Instead, design-data access uses the **host agent's own Figma connector** — a
+  client like **Claude** is catalog-approved and connects Figma directly with a
+  one-time browser sign-in. The `using-figma` skill tells the agent to use its
+  `mcp__figma__*` tools if present, and otherwise to ask the user to enable a
+  Figma connector in their agent settings.
+- **`skills/using-figma`** — how the agent reads `figma/links` and reaches design
+  data through its own Figma connector.
 - **`tab-templates/figma-work.json`** — a "Figma Work" tab opening `widget:figma`.
 
 ## Install
