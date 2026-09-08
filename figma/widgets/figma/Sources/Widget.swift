@@ -98,7 +98,8 @@ final class FigmaWidget: Work42Widget {
 
     let id = "figma"
     let title = "Figma"
-    let icon = "paintbrush.pointed"
+    let icon = "square.on.square.dashed"   // fallback; iconImageData is the brand mark
+    var iconImageData: Data? { FigmaWidget.brandPNG }
 
     /// Session surfaces only — attached files belong to a session, not Home.
     var enabledLayouts: Set<WidgetLayout> { Set(WidgetLayout.allCases).subtracting([.home]) }
@@ -208,7 +209,7 @@ final class FigmaWidget: Work42Widget {
         let tabs: [BrowserTab] = displayedURLs.map { url in
             let urlString = url.absoluteString
             let label = nameForURL(urlString) ?? (url.host ?? urlString)
-            return BrowserTab(id: stableTabID(for: urlString), url: url, title: label, icon: "paintbrush.pointed")
+            return BrowserTab(id: stableTabID(for: urlString), url: url, title: label, icon: "square.on.square.dashed")
         }
         model.replaceTabs(tabs)
     }
@@ -356,7 +357,7 @@ private struct FigmaBrowserView: View {
                 selector: "",
                 dataStoreKey: "browser",
                 title: "Figma",
-                icon: "paintbrush.pointed"
+                icon: "square.on.square.dashed"
             ),
             cacheKey: widget.id,
             configure: { [weak widget] model in
@@ -397,9 +398,7 @@ private struct FigmaEmptyStateView: View {
 
     var body: some View {
         VStack(spacing: DT.s16) {
-            Image(systemName: "paintbrush.pointed")
-                .font(.system(size: 32, weight: .light))
-                .foregroundStyle(DT.textTertiary)
+            FigmaBrandMark(size: 32)
 
             Text("No Figma file")
                 .font(.system(size: DT.f13, weight: .medium))
@@ -462,9 +461,7 @@ private struct FigmaAttachSheet: View {
 
     var body: some View {
         VStack(spacing: DT.s16) {
-            Image(systemName: "paintbrush.pointed")
-                .font(.system(size: 28, weight: .light))
-                .foregroundStyle(DT.textTertiary)
+            FigmaBrandMark(size: 28)
 
             Text("Attach a Figma file")
                 .font(.system(size: DT.f14, weight: .semibold))
@@ -517,6 +514,88 @@ private struct FigmaAttachSheet: View {
                 draftURL = ""
                 widget.showingAttachForm = false
             }
+        }
+    }
+}
+
+// MARK: - Figma brand mark
+
+extension FigmaWidget {
+    /// The Figma logo rendered to PNG once, for `iconImageData` (menu/header).
+    @MainActor static let brandPNG: Data? = renderBrandPNG(size: 64)
+
+    /// Draw the Figma logo — five shapes on a 38×57 grid (unit r = 9.5): three
+    /// left-column half-pills (red rounded-left, purple rounded-left) + salmon
+    /// rounded-right top, plus the blue (mid-right) and green (bottom-left) full
+    /// circles — into an NSImage and return PNG data.
+    @MainActor static func renderBrandPNG(size: CGFloat) -> Data? {
+        let image = NSImage(size: NSSize(width: size, height: size))
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        let pad = size * 0.14
+        let s = min((size - 2 * pad) / 38.0, (size - 2 * pad) / 57.0)
+        let ox = (size - 38 * s) / 2
+        let oy = (size - 57 * s) / 2
+        let r = 9.5 * s
+        // SVG (y-down, top=0) → NSImage (y-up).
+        func pt(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: ox + x * s, y: oy + (57 - y) * s) }
+
+        let red    = NSColor(srgbRed: 0.949, green: 0.306, blue: 0.118, alpha: 1) // F24E1E
+        let salmon = NSColor(srgbRed: 1.000, green: 0.447, blue: 0.384, alpha: 1) // FF7262
+        let purple = NSColor(srgbRed: 0.635, green: 0.349, blue: 1.000, alpha: 1) // A259FF
+        let blue   = NSColor(srgbRed: 0.102, green: 0.737, blue: 0.996, alpha: 1) // 1ABCFE
+        let green  = NSColor(srgbRed: 0.039, green: 0.812, blue: 0.514, alpha: 1) // 0ACF83
+
+        // Half-pill rounded on the LEFT of a 19×19 SVG cell at (x0, yTop).
+        func leftPill(x0: CGFloat, yTop: CGFloat) -> NSBezierPath {
+            let p = NSBezierPath()
+            p.move(to: pt(x0 + 19, yTop + 19))         // bottom-right
+            p.line(to: pt(x0 + 19, yTop))              // top-right
+            p.line(to: pt(x0 + 9.5, yTop))             // top of semicircle
+            p.appendArc(withCenter: pt(x0 + 9.5, yTop + 9.5), radius: r,
+                        startAngle: 90, endAngle: 270, clockwise: false)  // left bulge
+            p.close()
+            return p
+        }
+        // Half-pill rounded on the RIGHT of a 19×19 SVG cell at (x0, yTop).
+        func rightPill(x0: CGFloat, yTop: CGFloat) -> NSBezierPath {
+            let p = NSBezierPath()
+            p.move(to: pt(x0, yTop + 19))              // bottom-left
+            p.line(to: pt(x0, yTop))                   // top-left
+            p.line(to: pt(x0 + 9.5, yTop))             // top of semicircle
+            p.appendArc(withCenter: pt(x0 + 9.5, yTop + 9.5), radius: r,
+                        startAngle: 90, endAngle: 270, clockwise: true)   // right bulge
+            p.close()
+            return p
+        }
+        func circle(x0: CGFloat, yTop: CGFloat) -> NSBezierPath {
+            NSBezierPath(ovalIn: NSRect(origin: pt(x0, yTop + 19), size: NSSize(width: 19 * s, height: 19 * s)))
+        }
+
+        red.setFill();    leftPill(x0: 0, yTop: 0).fill()
+        salmon.setFill(); rightPill(x0: 19, yTop: 0).fill()
+        purple.setFill(); leftPill(x0: 0, yTop: 19).fill()
+        blue.setFill();   circle(x0: 19, yTop: 19).fill()
+        green.setFill();  circle(x0: 0, yTop: 38).fill()
+
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+}
+
+/// The Figma brand mark as a SwiftUI view (renders the shared PNG; falls back to
+/// a neutral glyph if rendering ever fails).
+private struct FigmaBrandMark: View {
+    let size: CGFloat
+    var body: some View {
+        if let data = FigmaWidget.brandPNG, let image = NSImage(data: data) {
+            Image(nsImage: image).resizable().scaledToFit().frame(width: size, height: size)
+        } else {
+            Image(systemName: "square.on.square.dashed")
+                .font(.system(size: size, weight: .light))
+                .foregroundStyle(DT.textTertiary)
         }
     }
 }
