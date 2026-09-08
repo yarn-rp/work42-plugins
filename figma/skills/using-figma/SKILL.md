@@ -2,11 +2,12 @@
 name: using-figma
 description: |
   How to use the Work42 Figma plugin: the figma file browser widget
-  (session-scoped, figma/links storage) plus the declared Figma remote MCP
+  (session-scoped, figma/links storage) plus the declared Figma Dev Mode MCP
   (mcp__figma__*, injected into task and code-review sessions). Covers reading
   the attached file links from the session's figma/links storage namespace,
-  querying the Figma MCP for design data, and the mcp-remote browser OAuth on
-  first call. Install with: work42 plugin install <path-to-figma-plugin>
+  querying the Figma MCP for design data, and the local Dev Mode MCP server
+  requirement (Figma desktop app + Dev/Full seat). Install with:
+  work42 plugin install <path-to-figma-plugin>
 ---
 
 # Using the Figma plugin
@@ -44,8 +45,8 @@ Figma once and the login persists across all browser-based widgets and restarts.
 ## The Figma MCP: query design data
 
 When this plugin is installed and the `figma` widget is active in a **task** or
-**code-review** session, the work42 registry injects the **Figma remote MCP**
-(`https://mcp.figma.com/mcp`, bridged via `npx mcp-remote`) and pre-approves its
+**code-review** session, the work42 registry injects the **Figma Dev Mode MCP**
+(`http://127.0.0.1:3845/mcp`, bridged via `npx mcp-remote`) and pre-approves its
 `mcp__figma__*` tools. Use those tools to read design data for the attached
 files:
 
@@ -53,11 +54,15 @@ files:
 2. Call the Figma MCP tools (`mcp__figma__*`) with those file references to fetch
    frames, components, variables, and other design data.
 
-**First-call OAuth.** The very first Figma MCP call in a session opens a browser
-authorize flow (handled entirely by `mcp-remote`, agent-side). Once the user
-authorizes, the token is cached and subsequent calls return data. There is NO
-Figma auth UI in the widget and NO token stored by work42 — auth is entirely
-`mcp-remote`'s OAuth.
+**Requires the Figma desktop app.** The Dev Mode MCP server runs locally inside
+the Figma desktop app — the user must have it open and enable it once via
+**Figma → Preferences → "Enable Dev Mode MCP Server"** (needs a Dev or Full
+seat). It uses the desktop app's own login, so there is NO OAuth, no token, and
+no widget auth. If the `mcp__figma__*` tools return a connection error, the most
+likely cause is the Figma desktop app not being open / Dev Mode MCP not enabled.
+
+The remote server (`https://mcp.figma.com/mcp`) is NOT used because it only
+accepts clients on Figma's approved MCP Catalog (allowlist).
 
 ## Typical flow
 

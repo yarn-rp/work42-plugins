@@ -7,7 +7,7 @@ description: |
   namespace: figma/links (JSON array of {url, name}). Use
   `task42 storage set <id> figma/links '[{"url":"<url>"}]'` on a task to attach
   a file without the widget open. When installed, the plugin also injects the
-  Figma remote MCP (mcp__figma__*) for reading design data — see using-figma.
+  Figma Dev Mode MCP (mcp__figma__*) for reading design data — see using-figma.
 ---
 
 # Figma widget
@@ -36,5 +36,6 @@ The tab bar's `+` opens an attach sheet; a tab's `×` detaches that file.
 Reading design data (frames, components, variables) is done through the **Figma
 MCP** (`mcp__figma__*`), which the plugin declares and the work42 registry
 injects into task/code-review sessions where this widget is active. See the
-`using-figma` skill. The widget itself does no Figma API auth — the MCP's
-`mcp-remote` handles OAuth on first call.
+`using-figma` skill. It points at Figma's LOCAL Dev Mode MCP server, which runs
+in the Figma desktop app (enable it in Figma → Preferences; needs a Dev/Full
+seat) — no OAuth, no widget auth.
