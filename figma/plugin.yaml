@@ -2,32 +2,11 @@ name: figma
 version: 1
 description: >
   Figma integration for Work42. Provides the Figma file browser widget (one tab
-  per attached figma.com link, sharing the "browser" cookie jar) plus a declared
-  Figma Dev Mode MCP (local http://127.0.0.1:3845/mcp, injected by the work42
-  registry into task and code-review sessions where the widget is active) and a
-  using-figma skill explaining how the agent reads the attached links from
-  storage and queries the Figma MCP.
+  per attached figma.com link, sharing the "browser" cookie jar) plus a
+  using-figma skill that explains how to read the attached links from storage
+  and — for design data — how to enable Figma through the agent's own connector.
+  work42 does NOT inject a Figma MCP: Figma's MCP is restricted to clients on
+  Figma's approved MCP Catalog, so the agent (e.g. Claude, an approved client)
+  connects it via its own connector settings instead.
 author: work42
 sdk_version: 6
-
-# work42 registry declaration (figma-plugin-mcp-registry-and-usage .4/.7): the
-# Figma MCP this plugin contributes. It points at Figma's LOCAL Dev Mode MCP
-# server, which runs inside the Figma desktop app (enable it in Figma →
-# Preferences → "Enable Dev Mode MCP Server"). It uses the desktop app's own
-# login, so there is NO OAuth / token / client registration here — it just
-# needs the desktop app open and a Dev/Full seat. The http transport is bridged
-# to stdio via `npx mcp-remote <url>` at injection time; mcp-remote connects to
-# the local server directly (no auth). Injected only into sessions whose kind is
-# in `kinds` AND where the owning `figma` widget is active.
-#
-# NOTE: the REMOTE server (https://mcp.figma.com/mcp) is deliberately NOT used:
-# it is restricted to clients on Figma's approved "MCP Catalog" (a their-side
-# waitlist/allowlist), so a self-registered OAuth client is rejected (403 at
-# client registration). Switch `url` back to it only once work42 is catalog-
-# approved by Figma.
-mcp:
-  - name: figma
-    widget: figma
-    url: http://127.0.0.1:3845/mcp
-    allowedTools: "mcp__figma__*"
-    kinds: [task, codeReview]
