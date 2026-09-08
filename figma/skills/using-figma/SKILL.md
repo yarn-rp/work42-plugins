@@ -64,12 +64,22 @@ If `mcp__figma__*` tools are available in this session, just use them:
 
 ### If you do NOT have Figma tools
 
-**Ask the user to enable the Figma connector in their agent, then retry.** For
-Claude, that's the Figma connector in their client's **Connectors/MCP settings**
-(e.g. add the Figma MCP server and complete the browser sign-in). Once enabled,
-`mcp__figma__*` tools appear in future sessions and this section's first path
-applies. Do not attempt to configure it yourself — it is the user's account +
-their agent's connector settings.
+**Ask the user to enable — and authenticate — the Figma connector in their
+agent, then retry.** For Claude, that's the Figma connector in their client's
+**Connectors/MCP settings** (add the Figma MCP server and complete the browser
+sign-in). Authentication runs through the agent's OWN native OAuth flow — e.g.
+`claude mcp login <name>` (or `codex mcp login <name>`) opens the browser sign-in
+— NOT anything work42 injects.
+
+work42 surfaces this directly: the **Session Settings** panel lists the agent's
+native MCP servers/connectors as "enabled globally," and any showing *Needs
+authentication* get a **Log in** button that launches exactly that native flow.
+So the shortest path is: tell the user to open Session Settings and click **Log
+in** on the Figma connector (or enable it first if it isn't listed), then retry.
+
+Once authenticated, `mcp__figma__*` tools appear and this section's first path
+applies. Do not try to configure or bridge it yourself — it is the user's account
++ their agent's connector settings.
 
 Until a Figma connector is enabled, you can still see whatever is rendered
 visually in the widget's browser tab, just not query structured design data.
