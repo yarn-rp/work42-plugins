@@ -31,6 +31,12 @@ let package = Package(
                 "jira/widgets/jira/SKILL.md",
                 "jira/widgets/jira/Sources/Widget.swift",
                 "jira/widgets/jira-my-issues",
+                "figma/README.md",
+                "figma/plugin.yaml",
+                "figma/skills",
+                "figma/tab-templates",
+                "figma/widgets/figma/SKILL.md",
+                "figma/widgets/figma/Sources/Widget.swift",
             ],
             sources: [
                 "github/widgets/github/Sources/GitHubLinkSupport.swift",
