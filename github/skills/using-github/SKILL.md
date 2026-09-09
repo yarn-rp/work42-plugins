@@ -153,6 +153,37 @@ services.intents.execute(id: "session.open.codeReview", params: payload)
 The host checks out the supplied branches without parsing GitHub data and
 persists `github/prs` opaquely in the new session's widget storage.
 
+## Daily planning: surface PRs to review as To-Dos
+
+To-Dos are a TIMELESS collection. **A code-review To-Do is auto-created when
+its code-review session is opened** (`work42://code-review?pr=<url>`) — so many
+already exist. When you (as the daily-planning agent, following the
+`planned-day` skill) find PRs awaiting my review, first `work42 todos list
+--open`; for a PR that has NO To-Do yet, add one:
+
+```bash
+work42 todos add \
+  --title "Review PR #42 — <pr title>" \
+  --url "work42://code-review?pr=https://github.com/<owner>/<repo>/pull/42" \
+  --reason "review requested" --project <slug>
+```
+
+Then, to put a review on TODAY, SCHEDULE a short window on the (new or existing)
+To-Do — don't bake a date into creation:
+
+```bash
+work42 todos update <id> --slot 2026-06-06T11:30:00Z/2026-06-06T12:00:00Z --project <slug>
+```
+
+Tapping the To-Do opens (creating on first click, idempotently) the code-review
+session for that PR — exactly what the github-prs widget's one-click launch
+does. Query the review queue with `gh` (e.g. `gh search prs --review-requested=@me
+--state open --json title,url,number,isDraft`), filter out drafts. Give each a
+short slot (20–45 min) fitted around my real calendar. Skip gracefully if `gh`
+is unavailable (say so; add no code-review To-Dos that run). The plugin never
+touches the To-Do model — it only teaches which To-Dos to add and which
+`work42://code-review` URL to attach.
+
 ## Tab template: GitHub Review
 
 The plugin ships a **GitHub Review** tab template (UUID
