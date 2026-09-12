@@ -100,6 +100,7 @@ struct PRSnapshot: Sendable {
     var state: String       // OPEN / MERGED / CLOSED
     var headRefOid: String
     var mergedAt: String?
+    var isDraft: Bool       // true while the PR is a draft (ST13 lifecycle segment)
     var author: String      // PR author's login ("" when absent)
     var reviews: [Review]
     var comments: [Comment]
@@ -137,6 +138,7 @@ struct PRSnapshot: Sendable {
 /// strip re-renders when CI or reviews move.
 struct PRHeaderState: Sendable, Equatable {
     var author: String
+    var isDraft: Bool
     var checksTotal: Int
     var checksFailed: Int
     var checksPending: Int
@@ -145,6 +147,7 @@ struct PRHeaderState: Sendable, Equatable {
 
     init(from snap: PRSnapshot) {
         author = snap.author
+        isDraft = snap.isDraft
         checksTotal = snap.checks.count
         checksFailed = snap.checks.filter(\.isFailure).count
         checksPending = snap.checks.filter { !$0.isComplete }.count
@@ -175,6 +178,7 @@ func parsePRSnapshot(from jsonString: String, prURL: String) -> PRSnapshot? {
     let state = ((obj["state"] as? String) ?? "UNKNOWN").uppercased()
     let headRefOid = (obj["headRefOid"] as? String) ?? ""
     let mergedAt = obj["mergedAt"] as? String
+    let isDraft = (obj["isDraft"] as? Bool) ?? false
     let author = decodeLogin(obj, key: "author")
 
     // Reviews
@@ -236,7 +240,7 @@ func parsePRSnapshot(from jsonString: String, prURL: String) -> PRSnapshot? {
 
     return PRSnapshot(
         number: number, state: state, headRefOid: headRefOid, mergedAt: mergedAt,
-        author: author,
+        isDraft: isDraft, author: author,
         reviews: reviews, comments: comments, reviewComments: [], checks: checks
     )
 }
@@ -551,7 +555,7 @@ final class GitHubBackgroundAgent: WidgetBackgroundAgent {
             let key = entry.url
 
             // Fetch snapshot via gh
-            let ghJSON = "\(enrichedPathPrefix) && gh pr view \"\(entry.url)\" --json number,state,headRefOid,mergedAt,author,reviews,comments,statusCheckRollup"
+            let ghJSON = "\(enrichedPathPrefix) && gh pr view \"\(entry.url)\" --json number,state,headRefOid,mergedAt,isDraft,author,reviews,comments,statusCheckRollup"
             let prResult: WidgetShellResult
             do {
                 prResult = try await services.shell.run(command: ghJSON)
@@ -573,7 +577,7 @@ final class GitHubBackgroundAgent: WidgetBackgroundAgent {
                 let inline = parseInlineComments(from: inlineResult.stdout)
                 snap = PRSnapshot(
                     number: snap.number, state: snap.state, headRefOid: snap.headRefOid,
-                    mergedAt: snap.mergedAt, author: snap.author,
+                    mergedAt: snap.mergedAt, isDraft: snap.isDraft, author: snap.author,
                     reviews: snap.reviews, comments: snap.comments,
                     reviewComments: inline, checks: snap.checks
                 )
@@ -661,6 +665,38 @@ final class GitHubBackgroundAgent: WidgetBackgroundAgent {
                 url: URL(string: entry.url),
                 groupId: gid
             ))
+
+            // Lifecycle segment (ST13) — the PR's own state, placed BEFORE
+            // the CI/review segments since lifecycle is the most important
+            // signal. Draft vs In Review is a display-only distinction
+            // read from the live `isDraft` (via PRHeaderState); the
+            // merged/closed states come from the stored `github/prs`
+            // entry's own lifecycle status (unchanged by this subtask).
+            let prURL = URL(string: entry.url)
+            switch entry.status {
+            case "merged":
+                labels.append(WidgetHeaderLabel(
+                    text: "Merged", systemIcon: "checkmark.circle.fill",
+                    tint: .success, url: prURL, groupId: gid
+                ))
+            case "closed":
+                labels.append(WidgetHeaderLabel(
+                    text: "Closed", systemIcon: "xmark.circle",
+                    tint: .neutral, url: prURL, groupId: gid
+                ))
+            default: // "open"
+                if st.isDraft {
+                    labels.append(WidgetHeaderLabel(
+                        text: "Draft", systemIcon: "pencil.circle",
+                        tint: .neutral, url: prURL, groupId: gid
+                    ))
+                } else {
+                    labels.append(WidgetHeaderLabel(
+                        text: "In Review", systemIcon: "eye.circle",
+                        tint: .accent, url: prURL, groupId: gid
+                    ))
+                }
+            }
 
             // CI status segment.
             if st.checksTotal > 0 {
